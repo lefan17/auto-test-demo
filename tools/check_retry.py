@@ -1,9 +1,11 @@
-"""自检脚本：验证 BaseApi 的重试策略（不发真实请求，用假的 Session）。
+"""自检脚本：验证 BaseApi 的重试策略与代理回退（发假的请求，用桩对象）。
 
-为什么写这个：重试逻辑是"只在出问题时才跑到"的代码，正常测试永远覆盖不到。
-它一旦写错（比如误重试 POST、比如该重试的没重试），后果是线上假失败或脏数据。
-这里用桩对象把三条关键路径都逼出来。
+为什么写这个：重试和代理回退都是"只在出问题时才跑到"的代码，正常测试永远覆盖不到。
+它们一旦写错（误重试 POST、代理没被绕过、该抛的异常被吞掉），
+后果是假失败或者脏数据。这里用桩对象把这些路径都逼出来。
 """
+import logging
+import os
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -14,6 +16,8 @@ import requests  # noqa: E402
 
 from api.base import BaseApi  # noqa: E402
 
+logging.disable(logging.WARNING)  # 自检输出保持干净
+
 
 def make_response(status_code: int, text: str = "{}") -> Mock:
     r = Mock(spec=requests.Response)
@@ -23,8 +27,9 @@ def make_response(status_code: int, text: str = "{}") -> Mock:
     return r
 
 
-def run_case(name: str, method: str, responses, expected_calls: int, expect_raise=None):
-    api = BaseApi("https://example.com", timeout=5, retries=2)
+def run_case(name: str, method: str, responses, expected_calls: int, expect_raise=None,
+             retries: int = 2, inspect=None) -> bool:
+    api = BaseApi("https://example.com", timeout=5, retries=retries)
     api.session = Mock()
     api.session.request = Mock(side_effect=responses)
     try:
@@ -37,11 +42,12 @@ def run_case(name: str, method: str, responses, expected_calls: int, expect_rais
         return False
 
     calls = api.session.request.call_count
-    if calls == expected_calls:
-        print(f"  [OK] {name}: 实际请求 {calls} 次")
-        return True
-    print(f"  [FAIL] {name}: 期望 {expected_calls} 次，实际 {calls} 次")
-    return False
+    ok = calls == expected_calls
+    detail = f"实际请求 {calls} 次" if ok else f"期望 {expected_calls} 次，实际 {calls} 次"
+    if ok and inspect:
+        ok, detail = inspect(api)
+    print(f"  [{'OK' if ok else 'FAIL'}] {name}: {detail}")
+    return ok
 
 
 def main() -> int:
@@ -90,6 +96,40 @@ def main() -> int:
         [make_response(200)],
         expected_calls=1,
     ))
+
+    # 7. 代理掐断 TLS 后，重试必须绕过代理（本机开着 Clash 时的真实场景）
+    def proxy_bypassed(api):
+        calls = api.session.request.call_args_list
+        first = calls[0].kwargs.get("proxies")
+        second = calls[1].kwargs.get("proxies")
+        if first is not None:
+            return False, f"第一次就绕过了代理({first})，不该如此"
+        if second != {"http": None, "https": None}:
+            return False, f"重试没有绕过代理(proxies={second})"
+        return True, "首次走代理、重试绕过代理"
+
+    os.environ.pop("API_TRUST_ENV", None)
+    results.append(run_case(
+        "代理失败后重试绕过代理", "GET",
+        [requests.exceptions.SSLError("SSLEOFError: UNEXPECTED_EOF_WHILE_READING"), make_response(200)],
+        expected_calls=2,
+        retries=1,
+        inspect=proxy_bypassed,
+    ))
+
+    # 8. 显式关掉回退（API_TRUST_ENV=0）时，必须老老实实报错，不能偷偷绕过
+    os.environ["API_TRUST_ENV"] = "0"
+    results.append(run_case(
+        "API_TRUST_ENV=0 时不绕过代理", "GET",
+        [requests.exceptions.SSLError("boom"), make_response(200)],
+        expected_calls=2,
+        retries=1,
+        inspect=lambda api: (
+            (api.session.request.call_args_list[1].kwargs.get("proxies") is None),
+            "重试仍走代理（符合 API_TRUST_ENV=0）",
+        ),
+    ))
+    os.environ.pop("API_TRUST_ENV", None)
 
     passed = sum(results)
     print(f"\n结果: {passed}/{len(results)} 通过")

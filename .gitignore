@@ -18,6 +18,13 @@ testcases/ui/artifacts/
 .tmp/
 *.log
 
+# pip 的临时目录：当 TEMP 被指到项目内时（本机为了绕开沙箱会这样做），
+# pip 会把 pip-unpack-* / pip-install-* / pip-ephem-wheel-cache-* 建在项目根目录
+pip-*/
+build/
+dist/
+*.egg-info/
+
 # IDE / 系统
 .idea/
 .DS_Store

@@ -109,14 +109,23 @@ pytest --html=report.html --self-contained-html
   避免公网或测试环境抖动产生"假失败"——没有重试的自动化，团队很快就不再信任它。
   但**只重试幂等请求**：GET/PUT/PATCH/DELETE 可以重放，POST 只在 429（请求没被处理）时重试，
   因为创建接口在 5xx 后重放可能造出重复订单、重复用户这类脏数据。
+- **代理自动回退**：传输失败后的重试会临时绕过系统代理再试一次
+  （`proxies={"http": None, "https": None}`）。本机开着 Clash/v2ray 时，`requests`
+  会自动走它，而这类代理对某些域名会直接掐断 TLS，报
+  `SSLError: UNEXPECTED_EOF_WHILE_READING`——直连反而是通的。
+  这条回退让"代理抽风"不至于被误判成"用例写错了"。设 `API_TRUST_ENV=0` 可关闭。
+- **耗时口径**：`response.elapsed_ms` 只统计**产出响应那一次请求**的耗时，
+  不含之前失败重试的等待。否则一次成功的重试会因为把上回超时的 30 秒也累加进来，
+  被判成"接口变慢"——恢复成功反而报失败。
 
 ## 当前实测结果
 
 ```text
-46 passed in 55.08s                    # pytest（全量，Windows 本机实测）
+46 passed in 50.17s                    # pytest（全量，Windows 本机实测）
 
 pytest -m api    32 passed, 14 deselected in 16.00s
 pytest -m ui     14 passed, 32 deselected in 27.26s
+python tools/check_retry.py            8/8 通过（重试与代理回退的路径覆盖）
 ```
 
 > 接口用例跑的是公网 `jsonplaceholder.typicode.com`。这个站会**限流**：
@@ -124,10 +133,13 @@ pytest -m ui     14 passed, 32 deselected in 27.26s
 > 传输层参数可用环境变量调，不用改代码：
 >
 > ```powershell
-> $env:API_TIMEOUT = "15"    # 单次请求超时秒数（默认 15）
-> $env:API_RETRIES = "2"     # 重试次数（默认 2）
-> $env:MAX_RESPONSE_MS = "3000"  # 响应时间断言的阈值
+> $env:API_TIMEOUT = "15"        # 单次请求超时秒数（默认 15）
+> $env:API_RETRIES = "2"         # 重试次数（默认 2）
+> $env:MAX_RESPONSE_MS = "5000"  # 响应时间断言阈值（默认 5000，公网接口要放宽）
+> $env:API_TRUST_ENV = "0"       # 关掉"失败后绕过代理重试"
 > ```
+>
+> 换成自己公司的内网接口后，`MAX_RESPONSE_MS` 应收到 200-500ms 才有性能门禁的意义。
 
 ## 持续集成
 
