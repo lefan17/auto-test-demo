@@ -1,11 +1,9 @@
 # 接口 + UI 自动化测试框架
 
-[![Auto Test](https://github.com/你的用户名/auto-test-demo/actions/workflows/test.yml/badge.svg)](https://github.com/你的用户名/auto-test-demo/actions/workflows/test.yml)
+[![Auto Test](https://github.com/lefan17/auto-test-demo/actions/workflows/test.yml/badge.svg)](https://github.com/lefan17/auto-test-demo/actions/workflows/test.yml)
 
 基于 Python + pytest 的自动化测试框架，覆盖 **接口自动化** 与 **UI 自动化**，
 支持数据驱动、JSON Schema 契约校验、Allure 报告和 GitHub Actions 持续集成。
-
-> 说明：把上面两处 `你的用户名/auto-test-demo` 换成你自己的仓库地址，徽章才会变绿。
 
 ## 技术栈
 
