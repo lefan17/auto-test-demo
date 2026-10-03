@@ -15,11 +15,16 @@ def test_get_user_list_should_return_200_and_contract(user_api):
     assert len(resp.json()) > 0, "用户列表不应为空"
 
 
-def test_user_list_should_have_exactly_10_records(user_api):
-    """数据量校验：jsonplaceholder 固定返回 10 条用户。"""
-    users = user_api.get_users().json()
+def test_user_list_should_have_exactly_10_records(user_api, config):
+    """数据量校验：期望条数从 config.yaml 读，不写死在断言里。
 
-    assert_field_equals(len(users), 10, "用户数量")
+    写死 10 的代价：换到内网环境（真实项目几千条用户）必然假失败，
+    而"假失败"会让人开始忽略红灯，这比少一条用例危险得多。
+    """
+    users = user_api.get_users().json()
+    expected = config["data"]["expected_user_count"]
+
+    assert_field_equals(len(users), expected, "用户数量")
 
 
 @pytest.mark.parametrize("user_id", [1, 2, 10], ids=lambda v: f"user-{v}")
@@ -52,7 +57,7 @@ def test_user_list_params_should_be_filtered(user_api):
 
 
 @pytest.mark.parametrize(
-    "field, expected_type",
+    ("field", "expected_type"),
     [
         ("id", int),
         ("name", str),

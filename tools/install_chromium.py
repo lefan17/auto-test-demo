@@ -13,6 +13,7 @@
 `PermissionError: [WinError 5] 拒绝访问`。遇到这种情况请改用 PowerShell 手工解压，
 命令见 README 常见问题第 6 条——那套命令在受限环境下同样有效。
 """
+
 import shutil
 import sys
 import zipfile
@@ -27,7 +28,9 @@ ZIP_PATH = Path(__file__).resolve().parent.parent / ".tmp" / "chromium-win64.zip
 def main() -> int:
     if not ZIP_PATH.exists():
         print(f"[错误] 找不到 zip: {ZIP_PATH}")
-        print("先执行: curl.exe -L -o .tmp/chromium-win64.zip https://cdn.npmmirror.com/binaries/playwright/builds/chromium/1140/chromium-win64.zip")
+        print(
+            "先执行: curl.exe -L -o .tmp/chromium-win64.zip https://cdn.npmmirror.com/binaries/playwright/builds/chromium/1140/chromium-win64.zip"
+        )
         return 1
 
     # 清理可能存在的半成品

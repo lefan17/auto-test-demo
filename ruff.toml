@@ -21,6 +21,13 @@ ignore = [
 # conftest 里 fixture 的参数看起来"未使用"，其实是 pytest 的依赖注入，不能删
 "**/conftest.py" = ["F811", "PT004"]
 
+[lint.flake8-pytest-style]
+# 多参数参数化统一写成元组 ("a", "b")，而不是 "a, b"。
+# 两种写法 pytest 都支持，但元组能被编辑器补全和静态检查理解，
+# 少一个参数时是「收集期报错」而不是「运行时才炸」。
+# 不写这一项的话默认就是 tuple，这里写出来是为了让这个约定在配置里可见。
+parametrize-names-type = "tuple"
+
 [format]
 quote-style = "double"
 indent-style = "space"

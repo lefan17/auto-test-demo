@@ -5,6 +5,7 @@
 2. 统一日志，失败时能回溯请求和耗时；
 3. 换域名/换鉴权方式只改这一处，用例不动。
 """
+
 import logging
 import os
 import time
@@ -63,9 +64,14 @@ class BaseApi:
                 req_kwargs = {**kwargs, "proxies": {"http": None, "https": None}}
 
             start = time.perf_counter()
-            logger.info("--> %s %s params=%s (第 %d 次%s)",
-                        method, url, kwargs.get("params"), attempt + 1,
-                        "，已绕过代理" if req_kwargs is not kwargs else "")
+            logger.info(
+                "--> %s %s params=%s (第 %d 次%s)",
+                method,
+                url,
+                kwargs.get("params"),
+                attempt + 1,
+                "，已绕过代理" if req_kwargs is not kwargs else "",
+            )
             try:
                 response = self.session.request(method, url, **req_kwargs)
             except (requests.ConnectionError, requests.Timeout) as exc:
@@ -73,8 +79,7 @@ class BaseApi:
                 # 请求大概率没被处理，重试是安全的。requests.SSLError 也继承自
                 # ConnectionError，所以代理掐 TLS 的情况会走到这里。
                 last_error = exc
-                logger.warning("<-- %s %s 传输失败(%d/%d): %s",
-                               method, url, attempt + 1, self.retries + 1, exc)
+                logger.warning("<-- %s %s 传输失败(%d/%d): %s", method, url, attempt + 1, self.retries + 1, exc)
                 if attempt < self.retries:
                     time.sleep(0.5 * (2**attempt))  # 退避 0.5s、1s
                     retried = True
@@ -87,8 +92,14 @@ class BaseApi:
                 logger.warning("<-- 失败响应: %s", response.text[:500])
 
             if self._should_retry(method, response) and attempt < self.retries:
-                logger.warning("<-- %s %s [%s] 命中重试条件(%d/%d)",
-                               method, url, response.status_code, attempt + 1, self.retries + 1)
+                logger.warning(
+                    "<-- %s %s [%s] 命中重试条件(%d/%d)",
+                    method,
+                    url,
+                    response.status_code,
+                    attempt + 1,
+                    self.retries + 1,
+                )
                 time.sleep(0.5 * (2**attempt))
                 retried = True
                 continue

@@ -13,3 +13,14 @@ jsonschema==4.23.0
 # === UI 测试 ===
 playwright==1.48.0
 pytest-playwright==0.5.2
+
+# === Mock 后端（testcases/mes/ 的业务全链路用例需要，见 mock_server/） ===
+# 放在同一个文件里，是为了让"一条 pip install 就能跑全部用例"成立。
+# 拆成两个依赖文件时，只装根依赖的人跑 pytest -m mes 会直接
+# 报 ImportError: No module named 'fastapi'——分成两个文件省下的那点安装时间，
+# 远抵不过"新同事照 README 做完却跑不起来"的代价。
+# 版本精确 pin：范围式 spec 曾把 starlette 解析到 0.13.1 这种远古版本。
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.4
+

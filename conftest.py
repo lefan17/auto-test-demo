@@ -3,19 +3,28 @@
 pytest 的 conftest.py 是按目录层级自动生效的 —— 放在项目根目录，
 下面的 testcases/ 全部继承。
 """
-import os
+
 import sys
 from pathlib import Path
 
 import pytest
 
-# 把项目根目录加进 sys.path，否则 testcases/ 里 `from api import UserApi` 会报
+# 把项目根目录加进 sys.path，否则 testcases/ 里 `from apis import UserApi` 会报
 # ModuleNotFoundError。加了 pytest.ini 的 rootdir 后通常也会带上，但显式写更稳。
+# 同时把 testcases/ 也加进去：testcases/mes/ 里的用例要 import 同目录的
+# mock_server_ctl / data_factory，pytest 的 rootdir 插入策略在不同调用方式下
+# （pytest / python -m pytest）行为不一致，显式插入最省事。
+#
+# 顺序很关键：必须**先**把 ROOT_DIR 插到最前面，再处理其它路径。
+# 源码包叫 apis、测试目录叫 testcases/api，两者不同名，就是为了避免
+# `testcases/api/__init__.py` 把 `api` 这个名字抢走（见 apis/__init__.py 的说明）。
 ROOT_DIR = Path(__file__).resolve().parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+TESTCASES_DIR = ROOT_DIR / "testcases"
+for _p in (ROOT_DIR, TESTCASES_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-from api import PostApi, UserApi  # noqa: E402
+from apis import PostApi, UserApi  # noqa: E402
 from common.yaml_util import get_config  # noqa: E402
 
 

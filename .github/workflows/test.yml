@@ -50,6 +50,13 @@ jobs:
         run: pytest -m ui --alluredir=allure-results
         continue-on-error: true
 
+      # 业务全链路用例：fixture 自己拉起本地 FastAPI + 独立 SQLite，
+      # 不依赖外部网络，所以它反而是 CI 上最稳的一组。
+      # 注意这一步**不设** continue-on-error：它测的是我们自己造的服务的状态机、
+      # 乐观锁和金额精度，红了就是真坏了，必须拦住流水线。
+      - name: 运行业务全链路自动化（本地 Mock 后端）
+        run: pytest -m mes --alluredir=allure-results
+
       # 这里原来用的是 simple-elf/allure-report-action@v1.9，
       # 它是个 Docker action，基础镜像 openjdk:8-jre-alpine 已被 Docker Hub 下架，
       # 报 "not found / failed to resolve source metadata"，导致整个 job 在第一步就失败，
@@ -95,6 +102,8 @@ jobs:
             echo "|---|---|"
             echo "| 接口用例 | \`pytest -m api\` |"
             echo "| UI 用例 | \`pytest -m ui\`（失败不阻断） |"
+            echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端） |"
+            echo "| 数据隔离 | \`data_isolation_check\`：会话结束时各表行数与库存合计必须回到基线 |"
             echo "| 报告 | 见下方 Artifacts 里的 \`allure-report\` |"
             echo "| 失败截图 | 见 \`ui-screenshots\` |"
             if [ -d allure-results ]; then

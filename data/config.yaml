@@ -18,3 +18,9 @@ user:
   invalid:
     username: "wrong_user"
     password: "wrong_password"
+
+# 被测数据的期望值：这些数字随环境变，所以放在配置里而不是写死在断言里。
+# 换到公司内网（可能有 5000 条用户）时只改这里，不用动用例。
+data:
+  expected_user_count: 10
+
