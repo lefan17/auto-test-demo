@@ -1,0 +1,15 @@
+# === 核心测试框架 ===
+pytest==8.3.3
+pytest-html==4.1.1
+allure-pytest==2.13.5
+pytest-xdist==3.6.1
+pytest-cov==6.0.0
+
+# === 接口测试 ===
+requests==2.32.3
+PyYAML==6.0.2
+jsonschema==4.23.0
+
+# === UI 测试 ===
+playwright==1.48.0
+pytest-playwright==0.5.2

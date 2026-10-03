@@ -1,0 +1,26 @@
+# Ruff 配置：代码检查和格式化。
+# 装了 charliermarsh.ruff 扩展后，保存文件会自动按这里的规则格式化。
+line-length = 120
+target-version = "py310"
+
+[lint]
+select = [
+    "E",   # pycodestyle 错误
+    "W",   # pycodestyle 警告
+    "F",   # pyflakes：未使用变量/未定义名称
+    "I",   # isort：import 排序
+    "B",   # bugbear：常见隐藏 bug
+    "PT",  # flake8-pytest-style：pytest 写法规范
+]
+ignore = [
+    "E501",  # 行太长由 formatter 处理，不报错
+    "B008",  # fixture 里调用函数是正常写法
+]
+
+[lint.per-file-ignores]
+# conftest 里 fixture 的参数看起来"未使用"，其实是 pytest 的依赖注入，不能删
+"**/conftest.py" = ["F811", "PT004"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

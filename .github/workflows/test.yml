@@ -1,0 +1,65 @@
+name: Auto Test
+
+# 触发时机：推送 / PR / 手动点按钮
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 安装 Playwright 浏览器
+        run: playwright install chromium --with-deps
+
+      - name: 运行接口自动化
+        run: pytest -m api --alluredir=allure-results
+        env:
+          # CI 网络比本地慢，阈值放宽，避免误报
+          MAX_RESPONSE_MS: "8000"
+
+      - name: 运行 UI 自动化（失败不阻断流水线）
+        run: pytest -m ui --alluredir=allure-results
+        continue-on-error: true
+
+      - name: 生成 Allure 报告
+        if: always()
+        uses: simple-elf/allure-report-action@v1.9
+        with:
+          allure_results: allure-results
+          allure_report: allure-report
+
+      - name: 上传测试报告（可在 Actions 页面下载）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report/
+          retention-days: 14
+
+      - name: 上传失败截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: ui/artifacts/
+          if-no-files-found: ignore
+          retention-days: 7

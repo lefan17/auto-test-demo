@@ -1,0 +1,24 @@
+# Python 忽略清单：测试产物和虚拟环境不要提交
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# 测试产物
+reports/
+report.html
+allure-results/
+allure-report/
+.coverage
+htmlcov/
+test-results/
+testcases/ui/artifacts/
+.tmp/
+*.log
+
+# IDE / 系统
+.idea/
+.DS_Store
+Thumbs.db

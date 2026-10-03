@@ -1,0 +1,10 @@
+{
+  // 工作区推荐扩展：协作者打开这个文件夹时 VS Code 会提示一键安装
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-python.debugpy",
+    "ms-playwright.playwright",
+    "charliermarsh.ruff"
+  ]
+}

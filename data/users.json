@@ -1,0 +1,17 @@
+{
+  "valid_user": {
+    "name": "lefan",
+    "username": "test_qa_01",
+    "email": "test_qa_01@example.com"
+  },
+  "edge_user": {
+    "name": "张三",
+    "username": "a",
+    "email": "zhangsan@example.com"
+  },
+  "invalid_user": {
+    "name": "",
+    "username": "",
+    "email": "not-an-email"
+  }
+}
