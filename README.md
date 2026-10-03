@@ -108,7 +108,7 @@ pytest --html=report.html --self-contained-html
 | 接口-性能基线 | 2 | 响应时间阈值（可用 `MAX_RESPONSE_MS` 调整）、请求头校验 |
 | UI-登录 | 6 | 登录成功、4 种失败场景（参数化）、退出登录 |
 | UI-商品/购物车 | 8 | 列表渲染、加购角标、多件参数化、购物车内容一致性、标题 |
-| 业务-MES 全链路 | 22 | 工单状态机贯通、乐观锁并发、幂等键（回放/冲突/失败释放/超长拒绝）、并发领料不超卖、权限矩阵双向断言、令牌校验、Decimal 精度、探针、额外字段拒绝 |
+| 业务-MES 全链路 | 29 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 22 条业务：状态机守卫分支、乐观锁并发、幂等键（回放/冲突/失败释放/超长拒绝）、并发领料不超卖、权限矩阵双向断言、令牌校验 |
 | 数据隔离 | 会话级 1 项 | 会话结束时各表行数与库存可用量合计必须回到基线（见下方"数据隔离"一节） |
 
 业务全链路那些用例**不依赖公网**：`testcases/mes/` 的 session 级 fixture 会自己
@@ -174,14 +174,28 @@ pytest --html=report.html --self-contained-html
 
 ## 当前实测结果
 
-```text
-76 passed in 63.00s                    # pytest（全量，Windows 本机实测）
+> 采集时间 **2026-10-03**（Windows 本机，公网接口用例受网络影响会有波动）。
+> **一个容易看错的点**：`api` 与 `mes` 两个标记有**重叠** ——
+> `testcases/mes/` 里的用例同时打了 `mes` 和 `api`/`regression`。
+> 所以 `-m api` 选到 62 条（33 条纯接口 + 29 条 MES），`-m mes` 选到 29 条，
+> **两个数字不能相加**。全量共 76 条 = 33 接口 + 14 UI + 29 MES。
 
-pytest -m api    33 passed, 43 deselected in 25.85s
+```text
+pytest --collect-only -q              76 tests collected
+
+pytest -m api    62 passed, 14 deselected in 36.20s
 pytest -m ui     14 passed, 62 deselected in 27.26s
-pytest -m mes    29 passed, 47 deselected in  7.16s
-python tools/check_retry.py           12/12 通过（重试与代理回退的路径覆盖）
+pytest -m mes    29 passed, 47 deselected in  6.75s
+python tools/check_retry.py           当前 12/12；按 D9 补第 13 条后会先变 12/13（故意红）
 ```
+
+> **为什么这里会短暂出现一次红**：第 13 条用例
+> 「传输失败后的状态码重试不绕过代理」钉的是一个**已知未修的缺陷** ——
+> `apis/base.py` 的代理回退判据 `last_error is not None` 记的是「这个请求曾经出过传输失败」，
+> 而不是「上一次尝试就是传输失败」，于是一次传输失败之后，**由 5xx 触发的重试也会绕过用户显式配置的代理**。
+>
+> **先加用例、看它红（12/13）、再改代码、再看它绿（13/13）** —— 顺序倒了就没有证据链。
+> 完整步骤见 `逐日操作指南.md` 的 D9。
 
 > 接口用例跑的是公网 `jsonplaceholder.typicode.com`。这个站会**限流**：
 > 短时间内连续跑多轮全量用例，会开始返回 429 或直接读超时。
