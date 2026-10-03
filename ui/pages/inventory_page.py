@@ -1,4 +1,5 @@
 """商品列表页 Page Object。"""
+
 import allure
 from playwright.sync_api import Page
 

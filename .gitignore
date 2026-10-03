@@ -18,6 +18,14 @@ testcases/ui/artifacts/
 .tmp/
 *.log
 
+# Mock 服务的 SQLite 数据库：文件本身是"运行时状态"，不该进版本库。
+# 带 -wal / -shm 后缀的是 WAL 模式的预写日志和共享内存文件，
+# 只忽略 .db 会漏掉它们（而且 -wal 里可能还压着没落盘的数据）。
+mock_server/*.db
+mock_server/*.db-shm
+mock_server/*.db-wal
+*.sqlite3
+
 # pip 的临时目录：当 TEMP 被指到项目内时（本机为了绕开沙箱会这样做），
 # pip 会把 pip-unpack-* / pip-install-* / pip-ephem-wheel-cache-* 建在项目根目录
 pip-*/

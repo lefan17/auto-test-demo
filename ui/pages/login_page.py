@@ -5,6 +5,7 @@ PO 模式的核心价值（面试必问）：
 2. 用例读起来是业务语言（login()、add_to_cart()），不是一堆 selector；
 3. 元素定位方式集中，方便统一改成 data-testid 等稳定方案。
 """
+
 import allure
 from playwright.sync_api import Page
 

@@ -1,8 +1,6 @@
 import pytest
 from playwright.sync_api import expect
 
-from ui import LoginPage
-
 pytestmark = [pytest.mark.ui, pytest.mark.smoke]
 
 
@@ -17,7 +15,7 @@ def test_login_success_should_enter_inventory(login_page, page, inventory_page):
 
 
 @pytest.mark.parametrize(
-    "username, password, expected_keyword",
+    ("username", "password", "expected_keyword"),
     [
         ("locked_out_user", "secret_sauce", "locked out"),
         ("wrong_user", "secret_sauce", "do not match"),

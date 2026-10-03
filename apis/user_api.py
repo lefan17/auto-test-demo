@@ -3,9 +3,10 @@
 用例只调这里的方法（get_user(1)），不关心 URL 长什么样。
 新增一个接口 = 在这里加一个方法。
 """
+
 from requests import Response
 
-from api.base import BaseApi
+from apis.base import BaseApi
 
 
 class UserApi(BaseApi):
