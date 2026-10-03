@@ -6,65 +6,92 @@
 3. 换域名/换鉴权方式只改这一处，用例不动。
 """
 import logging
+import os
 import time
 
 import allure
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
+# 需要重试的响应码：429 是被限流（公共测试接口常见），5xx 是服务端抖动
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# 只有「幂等」请求才允许重试。POST 不在其中——重放创建请求可能造出重复数据，
+# 这类副作用比一次失败更麻烦。创建类接口要重试的话，得靠业务上的幂等键。
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+
 
 class BaseApi:
-    def __init__(self, base_url: str, timeout: int = 10, retries: int = 2):
+    def __init__(self, base_url: str, timeout: int = None, retries: int = None):
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.retries = retries
+        # 环境和用例的优先级：显式传参 > 环境变量 > 默认值。
+        # 让别人不改进代码就能调：MAX_RESPONSE_MS 管断言阈值，这两个管传输层。
+        self.timeout = timeout or int(os.getenv("API_TIMEOUT", "15"))
+        self.retries = retries if retries is not None else int(os.getenv("API_RETRIES", "2"))
         self.session = requests.Session()
         # 会话级默认请求头；每条请求可通过 headers= 覆盖
         self.session.headers.update({"Content-Type": "application/json"})
-        # 重试策略：只对「连接失败」和「5xx」重试。
-        # 为什么必须加重试：公网接口/测试环境抖动是常态，没有重试的自动化
-        # 会产生大量「假失败」，团队很快就会不再信任这套用例。
-        retry = Retry(
-            total=retries,
-            backoff_factor=0.5,  # 退避：0.5s、1s...
-            status_forcelist=(500, 502, 503, 504),
-            allowed_methods=frozenset(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-        )
-        adapter = HTTPAdapter(max_retries=retry)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
         # 最近一次响应，调试时可用
         self.last_response = None
 
     # ---------- 核心请求方法 ----------
+    def _should_retry(self, method: str, response) -> bool:
+        """是否该重试：幂等方法 + 命中需要重试的状态码。"""
+        method = method.upper()
+        if method in IDEMPOTENT_METHODS:
+            return response.status_code in RETRY_STATUS
+        # POST：只在被限流时重试。限流意味着请求根本没被处理，重放是安全的；
+        # 而 5xx 时服务端可能已经落库了，重放会造重复数据。
+        return method == "POST" and response.status_code == 429
+
     def request(self, method: str, path: str, **kwargs) -> requests.Response:
         url = path if path.startswith("http") else f"{self.base_url}/{path.lstrip('/')}"
         kwargs.setdefault("timeout", self.timeout)
+        method = method.upper()
 
-        start = time.perf_counter()
-        logger.info("--> %s %s params=%s", method.upper(), url, kwargs.get("params"))
-        response = self.session.request(method, url, **kwargs)
-        elapsed_ms = (time.perf_counter() - start) * 1000
+        last_error = None
+        for attempt in range(self.retries + 1):
+            start = time.perf_counter()
+            logger.info("--> %s %s params=%s (第 %d 次)", method, url, kwargs.get("params"), attempt + 1)
+            try:
+                response = self.session.request(method, url, **kwargs)
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                # 连接失败与读超时是「传输没成」，请求大概率没被处理，重试安全
+                last_error = exc
+                logger.warning("<-- %s %s 传输失败(%d/%d): %s",
+                               method, url, attempt + 1, self.retries + 1, exc)
+                if attempt < self.retries:
+                    time.sleep(0.5 * (2**attempt))  # 退避 0.5s、1s
+                    continue
+                raise
 
-        logger.info("<-- %s %s [%s] %.0fms", method.upper(), url, response.status_code, elapsed_ms)
-        if not response.ok:
-            logger.warning("<-- 失败响应: %s", response.text[:500])
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            logger.info("<-- %s %s [%s] %.0fms", method, url, response.status_code, elapsed_ms)
+            if not response.ok:
+                logger.warning("<-- 失败响应: %s", response.text[:500])
 
-        self.last_response = response
-        # 挂到响应对象上，用例里可以直接断言响应时间
-        response.elapsed_ms = elapsed_ms
-        # 打进 Allure 报告：测试报告里能看到每个请求和耗时
-        with allure.step(f"{method.upper()} {url} -> {response.status_code} ({elapsed_ms:.0f}ms)"):
-            allure.attach(
-                f"URL: {url}\nStatus: {response.status_code}\nTime: {elapsed_ms:.0f}ms\n\n"
-                f"{response.text[:2000]}",
-                name="HTTP 请求详情",
-                attachment_type=allure.attachment_type.TEXT,
-            )
-        return response
+            if self._should_retry(method, response) and attempt < self.retries:
+                logger.warning("<-- %s %s [%s] 命中重试条件(%d/%d)",
+                               method, url, response.status_code, attempt + 1, self.retries + 1)
+                time.sleep(0.5 * (2**attempt))
+                continue
+
+            self.last_response = response
+            # 挂到响应对象上，用例里可以直接断言响应时间
+            response.elapsed_ms = elapsed_ms
+            # 打进 Allure 报告：测试报告里能看到每个请求和耗时
+            with allure.step(f"{method} {url} -> {response.status_code} ({elapsed_ms:.0f}ms)"):
+                allure.attach(
+                    f"URL: {url}\nStatus: {response.status_code}\nTime: {elapsed_ms:.0f}ms\n\n"
+                    f"{response.text[:2000]}",
+                    name="HTTP 请求详情",
+                    attachment_type=allure.attachment_type.TEXT,
+                )
+            return response
+
+        # 理论到不了这里（循环内要么 return 要么 raise），留着以防以后改坏
+        raise last_error if last_error else RuntimeError(f"{method} {url} 重试耗尽")
 
     # ---------- 语法糖 ----------
     def get(self, path: str, **kwargs) -> requests.Response:

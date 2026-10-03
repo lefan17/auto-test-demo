@@ -36,14 +36,16 @@ def ui_base_url(config) -> str:
 
 
 # ---------- function 级接口对象：每条用例一个干净 Session，用例之间互不污染 ----------
+# 超时不从这里传：传输层参数由 BaseApi 统一管（环境变量 API_TIMEOUT / API_RETRIES），
+# 免得同一个超时值在 YAML 和代码里各存一份，改一处忘一处。
 @pytest.fixture
-def user_api(api_base_url, config) -> UserApi:
-    return UserApi(api_base_url, timeout=config["base"]["timeout"])
+def user_api(api_base_url) -> UserApi:
+    return UserApi(api_base_url)
 
 
 @pytest.fixture
-def post_api(api_base_url, config) -> PostApi:
-    return PostApi(api_base_url, timeout=config["base"]["timeout"])
+def post_api(api_base_url) -> PostApi:
+    return PostApi(api_base_url)
 
 
 # ---------- 报告相关钩子：把被测环境地址写进 Allure 报告的环境信息页 ----------
