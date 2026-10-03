@@ -2,9 +2,10 @@
 base:
   api: "https://jsonplaceholder.typicode.com"
   ui: "https://www.saucedemo.com"
-  # 超时放大到 30s：公网测试站点（jsonplaceholder）经常抖动，
-  # 而 GitHub Actions 在海外访问国内站点也慢。本地内网接口可以改回 5-10。
-  timeout: 30
+  # 传输层超时不在这里配：它归 BaseApi 管，用环境变量调
+  #   $env:API_TIMEOUT = "15"    # 单次请求超时秒数
+  #   $env:API_RETRIES = "2"     # 幂等请求的重试次数
+  # 这样"超时和重试"只有一个真实来源，不会 YAML 改了一套、代码里跑着另一套。
 
 # UI 测试账号（saucedemo 是公开练习站）
 user:

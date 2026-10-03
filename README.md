@@ -105,20 +105,29 @@ pytest --html=report.html --self-contained-html
   saucedemo 的购物车就存在 localStorage 里，context 一共用，上一条用例加的商品就会串到下一条，
   表现为「加了 1 个，角标显示 2」这种假失败。创建 context 只要几十毫秒，省这个钱不值。
 - **失败留证**：UI 用例失败自动截图到 `ui/artifacts/`，CI 里作为 artifact 上传。
-- **失败重试**：接口层用 `urllib3.Retry` 对连接失败和 5xx 自动重试（退避 0.5s/1s），
+- **失败重试**：接口层对连接失败、读超时、429 和 5xx 自动重试（退避 0.5s/1s），
   避免公网或测试环境抖动产生"假失败"——没有重试的自动化，团队很快就不再信任它。
+  但**只重试幂等请求**：GET/PUT/PATCH/DELETE 可以重放，POST 只在 429（请求没被处理）时重试，
+  因为创建接口在 5xx 后重放可能造出重复订单、重复用户这类脏数据。
 
 ## 当前实测结果
 
 ```text
-46 passed in 48.58s                    # pytest（全量，Windows 本机实测）
+46 passed in 55.08s                    # pytest（全量，Windows 本机实测）
 
-pytest -m api    32 passed, 14 deselected in 30.55s
+pytest -m api    32 passed, 14 deselected in 16.00s
 pytest -m ui     14 passed, 32 deselected in 27.26s
 ```
 
-> 接口用例跑的是公网 `jsonplaceholder.typicode.com`，网络抖动时可能超时；
-> 接口层已加 `urllib3.Retry` 自动重试，`data/config.yaml` 里 `base.timeout` 设为 30 秒。
+> 接口用例跑的是公网 `jsonplaceholder.typicode.com`。这个站会**限流**：
+> 短时间内连续跑多轮全量用例，会开始返回 429 或直接读超时。
+> 传输层参数可用环境变量调，不用改代码：
+>
+> ```powershell
+> $env:API_TIMEOUT = "15"    # 单次请求超时秒数（默认 15）
+> $env:API_RETRIES = "2"     # 重试次数（默认 2）
+> $env:MAX_RESPONSE_MS = "3000"  # 响应时间断言的阈值
+> ```
 
 ## 持续集成
 
