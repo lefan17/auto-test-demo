@@ -142,7 +142,18 @@ python tools/check_retry.py            8/8 通过（重试与代理回退的路�
 ## 持续集成
 
 推送到 `main` 分支自动触发：安装依赖 → 跑接口用例 → 跑 UI 用例 → 生成 Allure 报告。
-报告在 Actions 页面的 Artifacts 里下载（`allure-report`）。
+报告在 Actions 页面的 Artifacts 里下载（`allure-report`），失败截图在 `ui-screenshots`。
+
+两个刻意的设计：
+
+- **UI 用例标了 `continue-on-error`**：它们打的是公共 demo 站，外部因素多。
+  但失败不阻断流水线 ≠ 可以不管——报告和截图照样产出，需要人去看。
+  真实项目里这个开关要慎用，它很容易变成"红灯没人管"的起点。
+- **Allure 用官方命令行生成，不用第三方 Docker action**。原来用的
+  `simple-elf/allure-report-action@v1.9` 依赖镜像 `openjdk:8-jre-alpine`，
+  该镜像已被 Docker Hub 下架，报 `failed to resolve source metadata`，
+  结果整个 job 在第一步就失败、连测试都没跑到。第三方 action 的这种腐烂
+  是真实工程里常见的一类风险：**引用别人的东西，就要承担它某天消失的代价。**
 
 ## 常见问题
 

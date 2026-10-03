@@ -22,6 +22,13 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # Allure 命令行本身是个 Java 程序，需要 JRE 才能生成报告
+      - name: 安装 JDK 17（Allure 命令行依赖）
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
@@ -34,18 +41,28 @@ jobs:
         run: pytest -m api --alluredir=allure-results
         env:
           # CI 网络比本地慢，阈值放宽，避免误报
+          # （实测 GitHub runner 连 jsonplaceholder 常在 2-4 秒波动）
           MAX_RESPONSE_MS: "8000"
 
+      # UI 用例打的是公共 demo 站，外部因素多，失败不阻断流水线。
+      # 但这不等于可以放着不管：报告和截图照样产出，需要人去看。
       - name: 运行 UI 自动化（失败不阻断流水线）
         run: pytest -m ui --alluredir=allure-results
         continue-on-error: true
 
+      # 这里原来用的是 simple-elf/allure-report-action@v1.9，
+      # 它是个 Docker action，基础镜像 openjdk:8-jre-alpine 已被 Docker Hub 下架，
+      # 报 "not found / failed to resolve source metadata"，导致整个 job 在第一步就失败，
+      # 连测试都没跑到。改用官方 Allure 命令行，行为可控、不依赖第三方镜像。
       - name: 生成 Allure 报告
         if: always()
-        uses: simple-elf/allure-report-action@v1.9
-        with:
-          allure_results: allure-results
-          allure_report: allure-report
+        run: |
+          npm install -g allure-commandline --silent
+          if [ -d allure-results ] && [ "$(ls -A allure-results)" ]; then
+            allure generate allure-results -o allure-report --clean
+          else
+            echo "没有产生 allure-results，跳过报告生成"
+          fi
 
       - name: 上传测试报告（可在 Actions 页面下载）
         if: always()
@@ -53,13 +70,35 @@ jobs:
         with:
           name: allure-report
           path: allure-report/
+          if-no-files-found: warn
           retention-days: 14
 
+      # 失败截图实际落在 testcases/ui/artifacts/（见 testcases/ui/conftest.py 的
+      # pytest_runtest_makereport 钩子）。这里原来写的是 ui/artifacts/，
+      # 路径不存在，截图从来没被上传过。
       - name: 上传失败截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ui-screenshots
-          path: ui/artifacts/
+          path: testcases/ui/artifacts/
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: 写流水线摘要
+        if: always()
+        run: |
+          {
+            echo "## 自动化测试结果"
+            echo ""
+            echo "| 项目 | 结果 |"
+            echo "|---|---|"
+            echo "| 接口用例 | \`pytest -m api\` |"
+            echo "| UI 用例 | \`pytest -m ui\`（失败不阻断） |"
+            echo "| 报告 | 见下方 Artifacts 里的 \`allure-report\` |"
+            echo "| 失败截图 | 见 \`ui-screenshots\` |"
+            if [ -d allure-results ]; then
+              echo ""
+              echo "本次共产生 $(ls allure-results | grep -c 'result.json' || true) 条用例结果。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
