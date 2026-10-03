@@ -1,0 +1,19 @@
+# 全局配置：被 conftest.py 读取，改成自己的地址即可
+base:
+  api: "https://jsonplaceholder.typicode.com"
+  ui: "https://www.saucedemo.com"
+  # 超时放大到 30s：公网测试站点（jsonplaceholder）经常抖动，
+  # 而 GitHub Actions 在海外访问国内站点也慢。本地内网接口可以改回 5-10。
+  timeout: 30
+
+# UI 测试账号（saucedemo 是公开练习站）
+user:
+  valid:
+    username: "standard_user"
+    password: "secret_sauce"
+  locked:
+    username: "locked_out_user"
+    password: "secret_sauce"
+  invalid:
+    username: "wrong_user"
+    password: "wrong_password"

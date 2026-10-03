@@ -1,0 +1,32 @@
+{
+  // 打开这个文件夹时，VS Code 直接用 .venv 里的解释器，不用手动选
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+  // 集成终端默认 UTF-8，否则 pytest 输出中文会乱码
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.env.windows": {
+    "PYTHONIOENCODING": "utf-8",
+    "PYTHONUTF8": "1"
+  },
+
+  // 测试面板：点侧边栏的烧瓶图标就能看到所有用例，单条可跑可调
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["-v"],
+
+  // 保存自动格式化 + 自动修 import（Ruff 扩展提供）
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  },
+
+  // 让 .py 文件里能识别 pytest fixture 参数，不报未解析引用
+  "python.analysis.extraPaths": ["${workspaceFolder}"],
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true
+  }
+}

@@ -1,0 +1,8 @@
+[global]
+# 清华 PyPI 镜像：国内直连 pypi.org 经常慢到"看起来卡死"
+# 实测同一份 requirements.txt：清华源 50 秒 vs 官方源 20 分钟无进展
+index-url = https://pypi.tuna.tsinghua.edu.cn/simple
+timeout = 30
+
+[install]
+trusted-host = pypi.tuna.tsinghua.edu.cn
