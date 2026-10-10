@@ -2,8 +2,9 @@
 
 [![Auto Test](https://github.com/lefan17/auto-test-demo/actions/workflows/test.yml/badge.svg)](https://github.com/lefan17/auto-test-demo/actions/workflows/test.yml)
 
-基于 Python + pytest 的自动化测试框架，覆盖 **接口自动化**、**UI 自动化** 与
-**带本地 Mock 后端的业务全链路测试**（状态机、乐观锁、幂等、并发竞态、Decimal 金额精度），
+基于 Python + pytest 的自动化测试框架，覆盖 **接口自动化**、**UI 自动化**、
+**带本地 Mock 后端的业务全链路测试**（状态机、乐观锁、幂等、并发竞态、Decimal 金额精度）
+与 **契约/缺陷探针测试**（自带一个故意带缺陷的登录服务），
 支持数据驱动、JSON Schema 契约校验、Allure 报告和 GitHub Actions 持续集成。
 
 ## 技术栈
@@ -14,6 +15,7 @@
 | 接口测试 | requests + jsonschema + PyYAML |
 | UI 测试 | Playwright 1.48（sync API） |
 | Mock 后端 | FastAPI + SQLite（WAL 模式），仅测试用 |
+| 被测服务 | FastAPI（`login_app/`，故意带 6 个已知缺陷，用于契约与探针用例） |
 | 报告 | Allure |
 | 持续集成 | GitHub Actions |
 
@@ -26,8 +28,10 @@ testcases/    用例层       —— 只写业务断言，不出现 requests 和
   api/        接口用例（打公网练习站 jsonplaceholder）
   ui/         UI 用例（打 saucedemo）
   mes/        业务全链路用例（自己起本地 Mock 服务 + 独立 SQLite）
+  login/      契约与缺陷探针用例（自己起本地 login_app，无需公网）
 ui/pages/     Page Object  —— 元素定位与页面操作
 mock_server/  Mock 后端    —— 工单状态机 / 库存 / 权限 / 幂等，仅测试用
+login_app/    被测服务     —— 登录接口，故意带 6 个已知缺陷（见下）
 data/         数据层       —— config.yaml 配置、users.json 测试数据、schemas.py 契约
 common/       工具层       —— YAML 读取、统一断言封装
 conftest.py   全局 fixture —— 配置、接口对象、报告钩子
@@ -76,6 +80,7 @@ playwright install chromium
 pytest                      # 全部用例
 pytest -m api               # 只跑接口（快，日常开发用这个）
 pytest -m ui                # 只跑 UI（需要浏览器）
+pytest -m login             # 只跑登录契约用例（本地服务，1.3 秒，无需公网）
 pytest -m smoke             # 只跑冒烟
 pytest -n 4 --dist loadfile # 4 进程并行（见下方说明）
 pytest -k "login"           # 按关键字筛选用例
@@ -109,11 +114,60 @@ pytest --html=report.html --self-contained-html
 | UI-登录 | 6 | 登录成功、4 种失败场景（参数化）、退出登录 |
 | UI-商品/购物车 | 8 | 列表渲染、加购角标、多件参数化、购物车内容一致性、标题 |
 | 业务-MES 全链路 | 29 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 22 条业务：状态机守卫分支、乐观锁并发、幂等键（回放/冲突/失败释放/超长拒绝）、并发领料不超卖、权限矩阵双向断言、令牌校验 |
+| 契约-登录 | 29 | 用 5 种设计方法推出的 30 条用例（等价类/边界值/判定表/场景法/错误推测），钉住被测服务当前行为并标注 6 个已知缺陷（FIND-01~06） |
 | 数据隔离 | 会话级 1 项 | 会话结束时各表行数与库存可用量合计必须回到基线（见下方"数据隔离"一节） |
 
 业务全链路那些用例**不依赖公网**：`testcases/mes/` 的 session 级 fixture 会自己
 拉起一个本地 FastAPI + 独立 SQLite（端口由系统分配、库在 pytest 临时目录里），
 跑完自动 kill。所以它既能离线跑，也不会污染开发者手工起的那个实例。
+
+登录契约用例同样**不依赖公网**：`testcases/login/` 的 session 级 fixture 起一个
+本地 `login_app`（端口由系统分配），跑完自动 kill。
+
+## 用例设计方法
+
+`testcases/login/` 的 30 条用例不是"想一条写一条"，而是用 5 种设计方法推出来的，
+每条用例在 `docs/login-test-cases.md` 里都标了来源方法：
+
+| 方法 | 一句话解释 | 覆盖编号 |
+|---|---|---|
+| 等价类划分 | 输入分为有效/无效类，每类取代表值 | LC-01~LC-13 |
+| 边界值分析 | 测边界上/内/外的值 | LC-15~LC-21 |
+| 判定表 | 多条件组合，覆盖所有分支 | LC-22~LC-25 |
+| 场景法 | 按业务流程/协议层走 | LC-26~LC-29 |
+| 错误推测 | 凭经验猜容易出错的地方 | LC-20/21/30 |
+
+**等价类和边界值必须一起用**：等价类管"每类取一个代表"，但管不住边界——
+密码 `123456` 和 `1234567` 属于同一个等价类（都错），却是不同的边界。
+只做等价类会漏边界，只做边界值覆盖不了类别。
+
+### 缺陷清单与用例的分工
+
+被测服务 `login_app/` 是**故意带 6 个缺陷**的，而用例**断言的是"当前行为就是这样"**
+（`assert r.status_code == 200`，注释标 `FIND-01`），**不是**"期望它被修好"
+（`assert r.status_code == 400`）。理由：
+
+> 期望式的断言会常年红着，团队很快学会"这几条是已知失败，忽略即可"，
+> 然后**真的失败也没人看了**。钉住当前行为则用例是绿的，一旦有人修好、
+> 或者改坏了，它立刻报警。缺陷本身由缺陷清单跟踪，用例当"行为变化探测器"。
+
+| 编号 | 级别 | 发现点 |
+|---|---|---|
+| FIND-01 | 中 | 无用户存在性校验：任意用户名 + 正确密码都能登录 |
+| FIND-02 | 低 | 契约偏差（宽松）：额外接受表单提交，契约只定义了 JSON |
+| FIND-03 | 低 | username trim 而 password 不 trim（处理不对称） |
+| FIND-04 | 低 | 无长度限制：1000 字符的用户名/密码均可提交 |
+| FIND-05 | 中 | 用户名原样回显：前端未转义则存在 XSS 风险 |
+| FIND-06 | 中 | token 为固定值 `demo-token-123`：无签发时间、无过期 |
+
+设计与契约细节见 `docs/login-test-cases.md`、`docs/login-contract.md`。
+
+### 为什么把被测服务也放进仓库
+
+一般项目「测的是别人的服务」，这里把被测服务（`login_app/`）一起放进来，是为了让
+**缺陷、用例、契约三者的对应关系**能被完整看到：用例为什么这么写、契约在哪一行
+被实现悄悄放宽了，都能查证。这也是面试讲"你怎么设计用例"时最缺的一环——
+只讲用例本身，讲不出它是**针对什么**设计的。
 
 ## 设计要点（面试会问）
 
@@ -175,19 +229,26 @@ pytest --html=report.html --self-contained-html
 ## 当前实测结果
 
 > 采集时间 **2026-10-03**（Windows 本机，公网接口用例受网络影响会有波动）。
-> **一个容易看错的点**：`api` 与 `mes` 两个标记有**重叠** ——
-> `testcases/mes/` 里的用例同时打了 `mes` 和 `api`/`regression`。
-> 所以 `-m api` 选到 62 条（33 条纯接口 + 29 条 MES），`-m mes` 选到 29 条，
-> **两个数字不能相加**。全量共 76 条 = 33 接口 + 14 UI + 29 MES。
+> **一个容易看错的点**：`api` 与 `mes`、`login` 三个标记有**重叠** ——
+> `testcases/mes/` 的用例同时打了 `mes` 和 `api`，`testcases/login/` 的同时打了
+> `login` 和 `api`。所以 `-m api` 选到 91 条（33 条纯接口 + 29 条 MES + 29 条登录），
+> **这些数字不能相加**。全量共 105 条 = 33 接口 + 14 UI + 29 MES + 29 登录。
 
 ```text
-pytest --collect-only -q              76 tests collected
+pytest --collect-only -q             105 tests collected
 
-pytest -m api    62 passed, 14 deselected in 36.20s
+pytest -m login  29 passed, 76 deselected in  1.34s   # 本地服务，无需公网
+pytest -m api    62 passed, 14 deselected in 36.20s   # 不含登录用例（.github 里分开跑）
 pytest -m ui     14 passed, 62 deselected in 27.26s
 pytest -m mes    29 passed, 47 deselected in  6.75s
+pytest testcases/api testcases/login  62 passed in 206.05s
 python tools/check_retry.py           当前 12/12；按 D9 补第 13 条后会先变 12/13（故意红）
 ```
+
+> **登录用例是这套用例里"最划算"的一组**：29 条跑完只要 1.34 秒，
+> 而接口用例 33 条要 3 分多钟——差别在登录用例打的是**本地进程**，
+> 接口用例打的是公网站（受网络和限流影响）。这也是为什么能落地的自动化
+> 大多把关键校验放在**本地可控的服务**上，公网练习站只作补充。
 
 > **为什么这里会短暂出现一次红**：第 13 条用例
 > 「传输失败后的状态码重试不绕过代理」钉的是一个**已知未修的缺陷** ——
@@ -225,6 +286,19 @@ python tools/check_retry.py           当前 12/12；按 D9 补第 13 条后会�
   该镜像已被 Docker Hub 下架，报 `failed to resolve source metadata`，
   结果整个 job 在第一步就失败、连测试都没跑到。第三方 action 的这种腐烂
   是真实工程里常见的一类风险：**引用别人的东西，就要承担它某天消失的代价。**
+
+生成报告这步特意**没有**用 `allure generate --clean`：
+
+```bash
+rm -rf allure-report
+allure generate allure-results -o allure-report
+```
+
+`--clean` 只存在于 Allure **2.x**（CI 装的 `allure-commandline`）。本地若装的是
+**3.x**（npm 包名是 `allure`，是 Node 程序而非 Java 程序），同一句会直接报
+`Unknown Syntax Error: Command not found`，且 3.x 的 `generate` **默认不清理输出目录**。
+「先删目录」是 2.x / 3.x 都合法的写法，效果与 `--clean` 等价，
+这样本地和 CI 可以用同一条命令，不会出现单边失败。
 
 ## 常见问题
 

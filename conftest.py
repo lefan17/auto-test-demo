@@ -20,7 +20,13 @@ import pytest
 # `testcases/api/__init__.py` 把 `api` 这个名字抢走（见 apis/__init__.py 的说明）。
 ROOT_DIR = Path(__file__).resolve().parent
 TESTCASES_DIR = ROOT_DIR / "testcases"
-for _p in (ROOT_DIR, TESTCASES_DIR):
+# 子目录也要显式插：testcases/login/conftest.py 里 `from login_server_ctl import ...`
+# 依赖它。只插 testcases/ 时，pytest 在 rootdir 模式下恰好会把子目录也带上，
+# 但用 `python -m pytest` 或从别的目录调用时行为不同 —— 这正是 MES 那边
+# 踩过的坑，两个子目录统一显式插入，不依赖隐式行为。
+LOGIN_DIR = TESTCASES_DIR / "login"
+MES_DIR = TESTCASES_DIR / "mes"
+for _p in (ROOT_DIR, TESTCASES_DIR, LOGIN_DIR, MES_DIR):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
