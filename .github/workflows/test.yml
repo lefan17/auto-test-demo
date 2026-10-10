@@ -57,16 +57,31 @@ jobs:
       - name: 运行业务全链路自动化（本地 Mock 后端）
         run: pytest -m mes --alluredir=allure-results
 
+      # 登录契约用例：fixture 自己拉起本地 login_app，同样不依赖外部网络。
+      # 这组用例钉住的是被测服务的**当前行为**（含 6 个已知缺陷，见 login_app/app.py），
+      # 所以它绿不代表"服务没问题"，而是代表"服务的行为没有变化"。
+      # 一旦有人改了 login_app 却没同步用例、或者修好了缺陷，这一步会红——
+      # 红的时候先看 docs/login-contract.md 的"契约 vs 实现"差异表，再决定是改用例还是改实现。
+      - name: 运行登录契约自动化（本地被测服务）
+        run: pytest -m login --alluredir=allure-results
+
       # 这里原来用的是 simple-elf/allure-report-action@v1.9，
       # 它是个 Docker action，基础镜像 openjdk:8-jre-alpine 已被 Docker Hub 下架，
       # 报 "not found / failed to resolve source metadata"，导致整个 job 在第一步就失败，
       # 连测试都没跑到。改用官方 Allure 命令行，行为可控、不依赖第三方镜像。
+      # 注意：这里**不用** `allure generate --clean`。
+      # Allure 2.x 有 --clean，但 Allure 3.x 把它移除了，写了会直接报
+      # "Unknown Syntax Error: Command not found"，一条报告都生成不出来。
+      # 先 `rm -rf` 再 generate 是版本无关的写法：2.x / 3.x 都能跑，效果与 --clean 等价。
+      # 这样本地（可能装的 2.x，也可能装的 3.x）和 CI 用同一条命令，不会出现
+      # "本地能跑、CI 挂" 或反过来的情况。
       - name: 生成 Allure 报告
         if: always()
         run: |
           npm install -g allure-commandline --silent
           if [ -d allure-results ] && [ "$(ls -A allure-results)" ]; then
-            allure generate allure-results -o allure-report --clean
+            rm -rf allure-report
+            allure generate allure-results -o allure-report
           else
             echo "没有产生 allure-results，跳过报告生成"
           fi
@@ -103,6 +118,7 @@ jobs:
             echo "| 接口用例 | \`pytest -m api\` |"
             echo "| UI 用例 | \`pytest -m ui\`（失败不阻断） |"
             echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端） |"
+            echo "| 登录契约 | \`pytest -m login\`（本地被测服务，钉住当前行为含 6 个已知缺陷） |"
             echo "| 数据隔离 | \`data_isolation_check\`：会话结束时各表行数与库存合计必须回到基线 |"
             echo "| 报告 | 见下方 Artifacts 里的 \`allure-report\` |"
             echo "| 失败截图 | 见 \`ui-screenshots\` |"
