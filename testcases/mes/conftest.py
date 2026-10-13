@@ -12,7 +12,12 @@ import random
 
 import pytest
 from data_factory import SEED_BASELINE, DataFactory
-from data_isolation import describe_diff, row_counts, snapshot
+from data_isolation import (
+    describe_diff,
+    ledger_balance_chain_errors,
+    row_counts,
+    snapshot,
+)
 from mock_server_ctl import MockServer
 
 from apis import MesApi
@@ -65,9 +70,21 @@ def factory(mes, mes_server) -> DataFactory:
     注意 fixture 里的 yield-teardown 顺序：清理必须在用例**结束之后**执行，
     这样即使断言失败也能收尾——否则一条失败的用例会留下脏数据，
     把后面几条用例一起带红，最后没人分得清哪个才是真正的失败点。
+
+    为什么在回收**之前**先验一次流水余额链：
+    `cleanup()` 会把用例自己造的流水行删掉，等会话收尾取快照时流水表已经空了，
+    "只 UPDATE 流水金额"这类错账再也无从比对（见 data_isolation 的模块注释）。
+    流水只增不改、行还在的时候是唯一能验它的时点，而这个时点就在回收之前。
     """
     f = DataFactory(mes, mes_server.root_url, mes_server.db_path)
     yield f
+    chain_errors = ledger_balance_chain_errors(mes_server.db_path)
+    assert not chain_errors, (
+        "流水账面余额与实际库存对不上（账实不符）—— 明细在下面：\n"
+        + "\n".join(chain_errors)
+        + "\n排查方向：写流水时余额没有按'当时的真实账面'计算，"
+        "或者有人在事务外直接 UPDATE 了 stock_ledger 的金额列。"
+    )
     actions = f.cleanup()
     if actions:
         print("\n[数据回收] " + "；".join(actions))
@@ -120,12 +137,17 @@ def data_isolation_check(mes_server) -> None:
 # ---------- 用并发跑用例的辅助 ----------
 @pytest.fixture
 def race():
-    """把若干无参函数**同时**发出去，返回 (结果列表, 墙钟毫秒)。
+    """把若干无参函数**同时**发出去，返回 (结果列表, 墙钟毫秒, 每个请求的起止时间)。
 
     实现要点：用一个 threading.Barrier 让所有线程在起跑线对齐后再发请求。
     为什么不能简单地"起 N 个线程然后 join"：
     线程创建本身有先后，第一个请求可能已经跑完，第 N 个才刚发出，
     这样根本构不成竞态——用例会"稳定通过"，但什么都没验证到。
+
+    第三个返回值（时间线）就是上面这句话的可验证形式：
+    光靠这个 fixture 的写法本身无法阻止它被换成串行实现，
+    所以每个请求的起止时间必须**交回用例**，由用例断言区间真的交叠过
+    （判定口径见 concurrency.py，那里解释了为什么不能拿总耗时当判据）。
     """
     import threading
     import time
@@ -135,11 +157,14 @@ def race():
         barrier = threading.Barrier(workers, timeout=30)
         results: list = [None] * workers
         errors: list = [None] * workers
+        spans: list = [None] * workers
 
         def wrapper(index: int, fn):
             try:
                 barrier.wait()
+                started = time.perf_counter()
                 results[index] = fn()
+                spans[index] = (started, time.perf_counter())
             except BaseException as exc:  # noqa: BLE001 - 线程里的异常要带回主线程
                 errors[index] = exc
 
@@ -152,7 +177,7 @@ def race():
         elapsed_ms = (time.perf_counter() - start) * 1000
         if any(e is not None for e in errors):
             raise AssertionError(f"并发执行中有线程抛异常: {errors}")
-        return results, elapsed_ms
+        return results, elapsed_ms, spans
 
     return run
 

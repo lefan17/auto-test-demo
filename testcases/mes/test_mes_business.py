@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import pytest
+from concurrency import assert_requests_overlapped, race_timeline
+from data_isolation import ledger_balance_chain_errors
 
 pytestmark = [pytest.mark.mes, pytest.mark.api, pytest.mark.regression]
 
@@ -146,6 +148,17 @@ class TestIdempotency:
         却收到 409"键已存在" —— 用户看到的是"这个按钮再也点不动了"，
         只能换一个幂等键，而幂等键的语义一旦被这样绕过，等于没做幂等。
         这也是很多人实现幂等时最容易漏的一步。
+
+        关键前提：**两次请求必须带同一个幂等键**。
+        如果第一次失败的那次请求压根没带 Idempotency-Key（走的是普通 POST），
+        那它从来没有占用过这个键，第二次当然会成功 ——
+        用例会稳定全绿，但它验证的其实是"不带幂等键的普通请求也能成功"，
+        与"失败是否释放键"毫无关系（这是一条真实的假绿，曾经就长这样）。
+        所以这里用 post_idem 发出第一次请求，让"占坑"真的发生。
+
+        后半段是负向对照：键被**成功**请求占用后并没有被释放，
+        用同一个键重放必须命中幂等回放（而不是又造一张工单）。
+        两条合起来才说明语义完整 = 失败释放、成功留存。
         """
         key = f"idem-release-{unique_tag}"
         duplicate = f"WO-DUP-{unique_tag}"
@@ -161,14 +174,33 @@ class TestIdempotency:
         # 先占住这个单号，让第一次请求必然失败（ORDER_NO_DUPLICATE）
         factory.work_order(order_no=duplicate)
 
-        first = mes.create_work_order("PLANNER", **base, order_no=duplicate)
+        # 第一次：带上幂等键，且必然失败 —— 它会把 key 占住（IN_PROGRESS）
+        first = mes.as_role("PLANNER").post_idem("/work-orders", key, json=dict(base, order_no=duplicate))
         mes.expect_error(first, 400, "ORDER_NO_DUPLICATE")
 
-        # 改数据后重试：同一个键，必须被允许（说明失败时已把占坑记录删掉）
+        # 改数据后重试：同一个键，必须被允许（说明失败时已把占坑记录删掉）。
+        # 如果服务端不释放这个键，这里会拿到 409 IDEMPOTENCY_KEY_CONFLICT
+        # —— 用户看到的就是"这个按钮再也点不动了"。
         fixed = f"WO-FIXED-{unique_tag}"
         second = mes.as_role("PLANNER").post_idem("/work-orders", key, json=dict(base, order_no=fixed))
         second_body = mes.expect_ok(second, 201)
         factory.register_order(second_body["order_no"])
+
+        # 负向对照：成功之后键必须仍然被占住，同键同体重放要命中回放而不是新建
+        replay = mes.as_role("PLANNER").post_idem("/work-orders", key, json=dict(base, order_no=fixed))
+        replay_body = mes.expect_ok(replay, 201)
+        assert replay.headers.get("X-Idempotent-Replay") == "true", (
+            "同一幂等键在成功之后重放，必须命中幂等回放（X-Idempotent-Replay: true）；"
+            f"实际响应头 {dict(replay.headers)}，响应体 {replay.text[:200]}"
+        )
+        assert replay_body["order_no"] == second_body["order_no"], (
+            f"重放必须返回同一张工单：首次 {second_body['order_no']}，重放 {replay_body['order_no']}"
+        )
+        listed = mes.expect_ok(
+            mes.as_role("PLANNER").get("/work-orders", params={"product_code": "FG-TEST-01"})
+        )
+        same = [w for w in listed["items"] if w["order_no"] == fixed]
+        assert len(same) == 1, f"成功请求占用键后重放，库里不该多出工单，实际 {len(same)} 条 {fixed}"
 
     def test_oversized_idempotency_key_is_rejected_not_truncated(self, factory, mes, unique_tag):
         """超长幂等键必须报错，绝不能截断。
@@ -230,6 +262,11 @@ class TestOptimisticLock:
         先起跑线对齐再同时发（见 conftest 的 race fixture），
         否则两个请求一前一后跑完，构不成竞态 ——
         用例会"稳定通过"，但其实什么都没验证到。
+
+        承重断言是"两个请求的时间区间真的交叠过"（assert_requests_overlapped）：
+        这句话光写在注释里是没有约束力的 —— 实测把 race 换成普通 for 循环，
+        这条用例照样全绿。所以必须让用例自己拿 race 回报的时间线去断言，
+        任何"改成串行"的改动都会在这里变红。
         """
         order_no, _ = factory.work_order()
         version = mes.work_order_version(order_no)
@@ -237,7 +274,10 @@ class TestOptimisticLock:
         def approve():
             return mes.as_role("PLANNER").post(f"/work-orders/{order_no}/approve", json={"version": version})
 
-        responses, elapsed_ms = race([approve, approve])
+        outcome = race([approve, approve])
+        # 先验"真的并发过"，再看业务结论：并发没成立时后面的 200/409 毫无意义
+        responses, elapsed_ms, spans = race_timeline(outcome, workers=2)
+        assert_requests_overlapped(spans, workers=2, elapsed_ms=elapsed_ms, action="并发审核同一张工单")
         codes = sorted(r.status_code for r in responses)
 
         assert codes == [200, 409], (
@@ -254,7 +294,7 @@ class TestOptimisticLock:
 # ==================== 并发与库存：防"超卖" ====================
 class TestConcurrentInventory:
     def test_concurrent_issue_never_oversells(self, factory, mes, race, take_material):
-        """两个请求同时领同样的料：库存合计必须守恒，不能出现负库存。
+        """两个请求同时领同样的料：只能成功一次，另一次必须被库存守卫拒掉。
 
         防的线上事故：**超卖**。
         经典形态是"先查库存再扣减"之间没有写锁：两个请求都读到 100，
@@ -262,35 +302,55 @@ class TestConcurrentInventory:
         Mock 服务用 `BEGIN IMMEDIATE`（见 mock_server/db.py 的 write_tx）
         把第二个请求在 BEGIN 处排队，它读到的一定是最新余额。
 
-        这条用例断言的是**不变量**而不是"必须一个成功一个失败"：
-        因为第二个请求可能发现余额已不够而 400，也可能余额充足两个都成功
-        —— 两者都正确。真正不能出现的是
-        "库存变了，但变的量与成功的领料次数对不上"。
+        单次领料量**必须大于库存的一半**，这是本条用例的承重前提：
+        两个请求不可能都成功，所以"至少被拒一次"每次都会真的发生。
+        原来的写法是库存 120.000 而每次只领 30.000 —— 两个请求都成功，
+        `INSUFFICIENT_STOCK` 那段断言**从未执行过**，
+        把 BEGIN IMMEDIATE 改成 DEFERRED 让两次都读到 120 也照样全绿（真实假绿）。
+        所以量不能写死，要按实测库存算出来，种子一改也不会悄悄退化。
 
-        注意 on_hand_qty 在这里**本来就不该变**（它 = available + reserved + issued，
-        领料只是把量从 available 挪到 issued）。所以守恒由两条断言体现：
-        issued 的增量 == 30.000 × 成功次数，且 available 的减量与之相等。
+        在"一次成功一次被拒"之外仍要守住守恒不变量：
+        issued 的增量必须等于单次量 × 成功次数、available 的减量与之相等、
+        available 不能为负 —— 这几条才是"不超卖"真正的内容。
         """
         take, state = take_material
         before = mes.stock_of(SEED_MATERIAL, SEED_WAREHOUSE)
         before_available = int(before["available_qty"].replace(".", ""))
         before_issued = int(before["issued_qty"].replace(".", ""))
 
-        per_request = "30.000"
-        responses, elapsed_ms = race([lambda: take(qty=per_request), lambda: take(qty=per_request)])
+        # 单次量 = 库存的一半再加 1 个最小单位：两个请求必有一个不够扣，
+        # 同时又保证第一个请求一定扣得动（所以"被拒分支"必然被执行一次）。
+        per_milli = before_available // 2 + 1
+        per_request = f"{per_milli // 1000}.{per_milli % 1000:03d}"
+        assert before_available > 0, f"种子库存为 0，本条用例失去前提: {before['available_qty']}"
 
+        outcome = race([lambda: take(qty=per_request), lambda: take(qty=per_request)])
+        responses, elapsed_ms, spans = race_timeline(outcome, workers=2)
+
+        # 先把"该退多少料"记下来再做断言：并发断言一旦失败，收尾也必须把料退回去，
+        # 否则这条用例的失败会顺着会话级隔离检查传染给后面所有用例（红得不是地方）。
         ok_count = sum(1 for r in responses if r.status_code == 200)
+        taken = per_milli * ok_count
+        state["need_reverse"] = True
+        state["qty"] = f"{taken // 1000}.{taken % 1000:03d}"
+
+        assert_requests_overlapped(spans, workers=2, elapsed_ms=elapsed_ms, action="并发领料")
+
+        assert ok_count == 1, (
+            f"单次领 {per_request} 而库存只有 {before['available_qty']}，"
+            f"两个请求不可能都成功，期望恰好 1 个 200，实际成功 {ok_count} 次"
+            f"（响应码 {[r.status_code for r in responses]}，耗时 {elapsed_ms:.0f}ms）"
+            "—— 成功两次就说明库存守卫没有在并发下生效（超卖）"
+        )
+
         rejected = [r for r in responses if r.status_code != 200]
         for resp in rejected:
             # 被拒绝的必须是"库存不足"这类明确的业务结论，而不是 500
             assert resp.status_code == 400, f"并发领料被拒时状态码异常: {resp.status_code} {resp.text[:200]}"
             assert mes.error_code(resp) == "INSUFFICIENT_STOCK", resp.text[:200]
 
-        state["need_reverse"] = True
-        state["qty"] = f"{30 * ok_count}.000"  # 收尾时把真正领走的量退回去
-
         after = mes.stock_of(SEED_MATERIAL, SEED_WAREHOUSE)
-        delta = 30 * ok_count * 1000
+        delta = taken
         assert int(after["issued_qty"].replace(".", "")) - before_issued == delta, (
             f"已发料增量与成功领料次数对不上：成功 {ok_count} 次、每次 {per_request}，"
             f"issued 期望 +{delta / 1000:.3f}，实际 {before['issued_qty']} -> {after['issued_qty']}"
@@ -334,6 +394,41 @@ class TestConcurrentInventory:
         )
         assert detail.get("requested") is not None, (
             f"库存不足的错误详情缺少 requested，排障时无法定位: {resp.text[:300]}"
+        )
+
+
+# ==================== 账实一致：防"只改金额不改行数"的隐性错账 ====================
+class TestLedgerConsistency:
+    def test_ledger_balance_chain_matches_stock(self, factory, mes, take_material):
+        """流水上记录的每一笔余额，必须能重放出"当时的真实账面"。
+
+        防的线上事故：**账实不符**。最阴的一类形态是行数、接口返回全都正常，
+        只有 `stock_ledger.balance_milli` 这一个金额列被写错（或者事后被
+        UPDATE 过），对账时才发现对不上。
+        行数指标抓不到它（行数没变），接口返回也抓不到它（返回的是 stock 表）。
+
+        为什么必须在**用例正文里**、且**在流水行还活着的时候**验：
+        `data_factory.cleanup()` 会把用例自己造的流水行删掉（流水没有删除接口，
+        只能直连库回收），会话收尾取快照时流水表已经空了 ——
+        如果只在会话级快照里比合计，这个不变量在正确的时序下是 0 == 0，永远是绿的。
+        判定口径见 data_isolation.ledger_balance_chain_errors。
+        """
+        take, state = take_material
+        before = mes.stock_of(SEED_MATERIAL, SEED_WAREHOUSE)
+
+        qty = "7.000"
+        order_no = factory.next("WO-LEDGER")
+        mes.expect_ok(take(qty=qty, order_no=order_no))
+        state["need_reverse"] = True
+        state["qty"] = qty
+
+        after = mes.stock_of(SEED_MATERIAL, SEED_WAREHOUSE)
+        moved = int(before["available_qty"].replace(".", "")) - int(after["available_qty"].replace(".", ""))
+        assert moved == 7000, f"领料 7.000 后可用量应减 7.000，实际少了 {moved / 1000:.3f}"
+
+        problems = ledger_balance_chain_errors(factory.db_path)
+        assert not problems, (
+            "流水账实不符 —— 明细在下面：\n" + "\n".join(problems)
         )
 
 

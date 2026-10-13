@@ -113,9 +113,9 @@ pytest --html=report.html --self-contained-html
 | 接口-性能基线 | 2 | 响应时间阈值（可用 `MAX_RESPONSE_MS` 调整）、请求头校验 |
 | UI-登录 | 6 | 登录成功、4 种失败场景（参数化）、退出登录 |
 | UI-商品/购物车 | 8 | 列表渲染、加购角标、多件参数化、购物车内容一致性、标题 |
-| 业务-MES 全链路 | 29 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 22 条业务：状态机守卫分支、乐观锁并发、幂等键（回放/冲突/失败释放/超长拒绝）、并发领料不超卖、权限矩阵双向断言、令牌校验 |
+| 业务-MES 全链路 | 30 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 23 条业务：状态机守卫分支、乐观锁并发、幂等键（回放/冲突/失败释放/超长拒绝）、并发领料不超卖、流水账实一致、权限矩阵双向断言、令牌校验 |
 | 契约-登录 | 29 | 用 5 种设计方法推出的 30 条用例（等价类/边界值/判定表/场景法/错误推测），钉住被测服务当前行为并标注 6 个已知缺陷（FIND-01~06） |
-| 数据隔离 | 会话级 1 项 | 会话结束时各表行数与库存可用量合计必须回到基线（见下方"数据隔离"一节） |
+| 数据隔离 | 会话级 1 项 | 会话结束时各表行数与关键数值列合计（库存可用/占用/已发料、流水数量与账面余额）必须回到基线，且流水余额链逐笔自洽（见下方"数据隔离"一节） |
 
 业务全链路那些用例**不依赖公网**：`testcases/mes/` 的 session 级 fixture 会自己
 拉起一个本地 FastAPI + 独立 SQLite（端口由系统分配、库在 pytest 临时目录里），
@@ -203,8 +203,11 @@ pytest --html=report.html --self-contained-html
 - **会话级基线断言**：`testcases/mes/conftest.py` 的 `data_isolation_check`（autouse，session 级）
   在会话开始抓一次快照、结束时再抓一次，两者必须完全相等。挂在 session 级而不是每条用例结束，
   是因为工厂造完数据、下一条用例还没跑时行数本来就是"临时脏"的；逐条查会把正常流程判成污染。
-- **两个指标，缺一不可**：`testcases/mes/data_isolation.py` 同时统计**各表行数**和**库存可用量合计**。
-  只断行数会漏掉最阴的一类泄漏——领料只 `UPDATE` 一行、行数完全不变，但账实已经不符。
+- **三个指标，缺一不可**：`testcases/mes/data_isolation.py` 同时统计**各表行数**、
+  **关键数值列合计**（库存可用/占用/已发料、流水数量与账面余额）和**流水余额链**。
+  只断行数会漏掉最阴的一类泄漏——领料只 `UPDATE` 一行、行数完全不变，但账实已经不符；
+  而"流水金额被写错"连列合计也抓不到，因为流水行会被回收逻辑删掉、收尾时已经是 0 行，
+  所以余额链必须**在流水行还活着的时候**逐笔重放（见 `docs/测试有效性说明.md`）。
 - **清理不依赖用例正文走完**：`factory` fixture 在 teardown 里回收，`take_material` fixture
   在 teardown 里自动反向退料。断言失败的用例也会把数据还回去，否则一条失败的用例会留下脏数据、
   把后面几条一起带红，最后没人分得清哪个才是真正的失败点。
@@ -231,19 +234,29 @@ pytest --html=report.html --self-contained-html
 > 采集时间 **2026-10-03**（Windows 本机，公网接口用例受网络影响会有波动）。
 > **一个容易看错的点**：`api` 与 `mes`、`login` 三个标记有**重叠** ——
 > `testcases/mes/` 的用例同时打了 `mes` 和 `api`，`testcases/login/` 的同时打了
-> `login` 和 `api`。所以 `-m api` 选到 91 条（33 条纯接口 + 29 条 MES + 29 条登录），
-> **这些数字不能相加**。全量共 105 条 = 33 接口 + 14 UI + 29 MES + 29 登录。
+> `login` 和 `api`。所以 `-m api` 选到 92 条（33 条纯接口 + 30 条 MES + 29 条登录），
+> **这些数字不能相加**。全量共 106 条 = 33 接口 + 14 UI + 30 MES + 29 登录。
 
 ```text
-pytest --collect-only -q             105 tests collected
+pytest --collect-only -q             106 tests collected
 
-pytest -m login  29 passed, 76 deselected in  1.34s   # 本地服务，无需公网
-pytest -m api    62 passed, 14 deselected in 36.20s   # 不含登录用例（.github 里分开跑）
-pytest -m ui     14 passed, 62 deselected in 27.26s
-pytest -m mes    29 passed, 47 deselected in  6.75s
-pytest testcases/api testcases/login  62 passed in 206.05s
+pytest -m login  29 passed, 77 deselected in  1.59s   # 本地服务，无需公网
+pytest -m api    92 selected, 14 deselected           # 不含登录用例（.github 里分开跑）；需公网，本机未跑
+pytest -m ui     14 passed, 92 deselected in 27.26s
+pytest -m mes    30 passed, 76 deselected in  6.95s
+pytest testcases/api testcases/login  62 tests collected
 python tools/check_retry.py           当前 12/12；按 D9 补第 13 条后会先变 12/13（故意红）
 ```
+
+> 上面 `-m mes` / `-m login` / `--collect-only` 三个数字是本机实跑输出；
+> `-m api` 与 `-m ui` 依赖公网 `jsonplaceholder` 与本机 Chrome，**本机没有跑**，
+> 只给出 `--collect-only` 的选取条数（`-m api` 92 选 14 去、`-m ui` 14 选 92 去），
+> 耗时沿用上一次有网络环境时的记录。
+
+> **为什么 `-m mes` 的 deselected 是 76**：deselected = 全量 106 − 选中 30。
+> 旧文档这里写的是 47（按"全量 76"算出来的老快照），与 `--collect-only` 报告的 106
+> 自相矛盾，已按实跑输出订正；`-m mes` 选中数从 29 变成 30，
+> 是因为补了一条"流水账面余额链"用例（见 `docs/测试有效性说明.md`）。
 
 > **登录用例是这套用例里"最划算"的一组**：29 条跑完只要 1.34 秒，
 > 而接口用例 33 条要 3 分多钟——差别在登录用例打的是**本地进程**，
