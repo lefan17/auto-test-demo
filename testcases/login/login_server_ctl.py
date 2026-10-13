@@ -59,9 +59,7 @@ class LoginServer:
 
     # ---------- 生命周期 ----------
     def start(self, timeout: float = 30.0) -> "LoginServer":
-        python = os.getenv("LOGIN_PYTHON") or (
-            str(DEFAULT_PYTHON) if DEFAULT_PYTHON.exists() else sys.executable
-        )
+        python = os.getenv("LOGIN_PYTHON") or (str(DEFAULT_PYTHON) if DEFAULT_PYTHON.exists() else sys.executable)
         cmd = [
             python,
             "-m",
@@ -76,9 +74,7 @@ class LoginServer:
 
         # 日志落文件而不是接管道：子进程写满管道缓冲区会卡死
         # （Windows 上 pip/pytest 的输出管道问题在本机反复出现过）。
-        self._log_file = (
-            open(self.log_path, "w", encoding="utf-8") if self.log_path else subprocess.DEVNULL
-        )
+        self._log_file = open(self.log_path, "w", encoding="utf-8") if self.log_path else subprocess.DEVNULL
         env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(PROJECT_ROOT)}
         self.proc = subprocess.Popen(
             cmd,
@@ -106,8 +102,7 @@ class LoginServer:
         while time.time() < deadline:
             if self.proc and self.proc.poll() is not None:
                 raise LoginServerError(
-                    f"登录服务进程已退出（returncode={self.proc.returncode}）。"
-                    f"启动日志: {self._read_log_tail()}"
+                    f"登录服务进程已退出（returncode={self.proc.returncode}）。启动日志: {self._read_log_tail()}"
                 )
             try:
                 with urllib.request.urlopen(f"{self.base_url}/api/health", timeout=1.0) as resp:

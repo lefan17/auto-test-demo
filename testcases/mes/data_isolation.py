@@ -65,9 +65,7 @@ def column_totals(db_path: Path) -> dict[str, int]:
     """
     with sqlite3.connect(str(db_path), timeout=10.0) as conn:
         return {
-            f"{table}.{column}": int(
-                conn.execute(f"SELECT COALESCE(SUM({column}), 0) FROM {table}").fetchone()[0]
-            )
+            f"{table}.{column}": int(conn.execute(f"SELECT COALESCE(SUM({column}), 0) FROM {table}").fetchone()[0])
             for table, column, _ in COLUMN_TOTALS
         }
 
@@ -103,8 +101,7 @@ def ledger_balance_chain_errors(db_path: Path) -> list[str]:
     problems: list[str] = []
     with sqlite3.connect(str(db_path), timeout=10.0) as conn:
         rows = conn.execute(
-            "SELECT id, material_code, warehouse, txn_type, qty_milli, balance_milli"
-            " FROM stock_ledger ORDER BY id ASC"
+            "SELECT id, material_code, warehouse, txn_type, qty_milli, balance_milli FROM stock_ledger ORDER BY id ASC"
         ).fetchall()
         available = {
             (material_code, warehouse): available_milli
@@ -123,10 +120,7 @@ def ledger_balance_chain_errors(db_path: Path) -> list[str]:
         net_change[key] = net_change.get(key, 0) + SIGNED_TXN[txn_type] * qty_milli
     problems.extend(unknown_txn)
 
-    running = {
-        key: available.get(key, 0) - net_change.get(key, 0)
-        for key in set(available) | set(net_change)
-    }
+    running = {key: available.get(key, 0) - net_change.get(key, 0) for key in set(available) | set(net_change)}
     for row_id, material_code, warehouse, txn_type, qty_milli, balance_milli in rows:
         if txn_type not in SIGNED_TXN:
             continue

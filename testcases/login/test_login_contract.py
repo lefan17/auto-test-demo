@@ -106,7 +106,7 @@ def test_lc05_form_submission_accepted(login_api):
 
 
 @pytest.mark.parametrize(
-    "payload,case",
+    ("payload", "case"),
     [
         ({}, "LC-06 缺全部字段"),
         ({"password": "123456"}, "LC-07 缺 username"),
@@ -136,7 +136,7 @@ def test_lc06_to_lc13_missing_fields_400(login_api, payload, case):
 
 
 @pytest.mark.parametrize(
-    "password,case",
+    ("password", "case"),
     [
         ("wrong", "LC-14 完全错误的密码"),
         ("1234567", "LC-15 密码多一位（边界外）"),

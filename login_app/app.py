@@ -54,12 +54,12 @@ APP_VERSION = "1.0.0"
 CORRECT_PASSWORD = "123456"
 
 # ---------- 行为开关：默认全开，改任意一个都会让对应用例变红 ----------
-FIND_01_NO_USER_CHECK = True      # 不校验用户是否存在（任意用户名 + 正确密码都能登）
-FIND_02_ACCEPT_FORM = True        # 兼容表单提交（契约只定义了 application/json）
-FIND_03_TRIM_ASYMmetry = True     # username 做 trim、password 不做
-FIND_04_NO_LENGTH_LIMIT = True    # 不限制输入长度
-FIND_05_ECHO_USERNAME = True      # 原样回显用户名
-FIND_06_FIXED_TOKEN = True        # 固定 token
+FIND_01_NO_USER_CHECK = True  # 不校验用户是否存在（任意用户名 + 正确密码都能登）
+FIND_02_ACCEPT_FORM = True  # 兼容表单提交（契约只定义了 application/json）
+FIND_03_TRIM_ASYMmetry = True  # username 做 trim、password 不做
+FIND_04_NO_LENGTH_LIMIT = True  # 不限制输入长度
+FIND_05_ECHO_USERNAME = True  # 原样回显用户名
+FIND_06_FIXED_TOKEN = True  # 固定 token
 
 # 用于 FIND-06：固定 token 的字面量。用例直接断言它等于这个值。
 FIXED_TOKEN = "demo-token-123"
@@ -73,9 +73,7 @@ def _looks_like_form(content_type: str) -> bool:
     `request.get_json(silent=True) or request.form.to_dict()` 里 form 的
     "不是表单就返回空"语义，避免 Starlette 直接抛异常导致 500。
     """
-    return ("application/x-www-form-urlencoded" in content_type) or (
-        "multipart/form-data" in content_type
-    )
+    return ("application/x-www-form-urlencoded" in content_type) or ("multipart/form-data" in content_type)
 
 
 def create_app() -> FastAPI:

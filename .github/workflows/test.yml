@@ -9,6 +9,38 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 代码规范：仓库里早有 ruff.toml（line-length / target-version / select 都写好了），
+  # 但在这次改动之前没有任何地方真的执行它——规矩只写在纸上。
+  # 单独开一个 job 而不是塞进 test job：规范检查几秒钟就出结果，
+  # 没必要等 playwright 装浏览器、等 api 用例跑完才告诉你 import 顺序错了。
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 版本写死，不装 latest：ruff 的规则集和 format 输出会随版本变，
+      # 浮动版本会让"本地绿、CI 红"变成随机事件。
+      # 0.16.10 是本地把仓库刷干净时用的版本，CI 与本地保持一致。
+      - name: 安装 ruff
+        run: python -m pip install "ruff==0.16.10"
+
+      # 配置全部来自仓库根的 ruff.toml，这里不重复传任何参数，
+      # 避免 CI 和本地跑的规则悄悄分叉。
+      - name: ruff check（lint 规则）
+        run: ruff check .
+
+      # --check 只报告不写入：CI 上格式化必须是"检查"，
+      # 自动改文件会让流水线产出与提交内容不一致。
+      - name: ruff format --check（格式规范）
+        run: ruff format --check .
+
   test:
     runs-on: ubuntu-latest
 

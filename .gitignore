@@ -37,3 +37,6 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# pytest 的 basetemp 残留目录：若落在仓库根目录，会因 ACL 不可读导致 ruff panic
+pytest-of-*/

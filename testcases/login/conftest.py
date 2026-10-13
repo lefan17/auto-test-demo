@@ -64,15 +64,11 @@ class LoginClient:
     # ---------- 请求方法 ----------
     def login_json(self, payload: dict | None = None) -> requests.Response:
         """JSON 方式登录（契约定义的方式）。"""
-        return self.session.post(
-            f"{self.base_url}/api/login", json=payload, timeout=self.timeout
-        )
+        return self.session.post(f"{self.base_url}/api/login", json=payload, timeout=self.timeout)
 
     def login_form(self, payload: dict | None = None) -> requests.Response:
         """表单方式登录（契约未定义，实现额外兼容 —— FIND-02）。"""
-        return self.session.post(
-            f"{self.base_url}/api/login", data=payload, timeout=self.timeout
-        )
+        return self.session.post(f"{self.base_url}/api/login", data=payload, timeout=self.timeout)
 
     def login_raw(self, body: str, content_type: str = "text/plain") -> requests.Response:
         """发送任意请求体，用于测"非 JSON 请求体"这类协议层场景。"""

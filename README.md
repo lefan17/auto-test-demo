@@ -17,6 +17,7 @@
 | Mock 后端 | FastAPI + SQLite（WAL 模式），仅测试用 |
 | 被测服务 | FastAPI（`login_app/`，故意带 6 个已知缺陷，用于契约与探针用例） |
 | 报告 | Allure |
+| 代码规范 | ruff（配置见 `ruff.toml`，CI 里强制执行） |
 | 持续集成 | GitHub Actions |
 
 ## 分层设计
@@ -286,11 +287,20 @@ python tools/check_retry.py           当前 12/12；按 D9 补第 13 条后会�
 
 ## 持续集成
 
-推送到 `main` 分支自动触发：安装依赖 → 跑接口用例 → 跑 UI 用例 → 生成 Allure 报告。
-报告在 Actions 页面的 Artifacts 里下载（`allure-report`），失败截图在 `ui-screenshots`。
+推送到 `main` 分支自动触发，分两个 job：
 
-两个刻意的设计：
+- **`lint`**：`ruff check .` + `ruff format --check .`，规则全部来自仓库根的 `ruff.toml`。
+- **`test`**：安装依赖 → 跑接口用例 → 跑 UI 用例 → 跑业务全链路 → 跑登录契约 → 生成 Allure 报告。
 
+两个 job 并行跑。报告在 Actions 页面的 Artifacts 里下载（`allure-report`），失败截图在 `ui-screenshots`。
+
+三个刻意的设计：
+
+- **lint 单独开一个 job**：规范检查几秒钟就出结果，没必要等 playwright 装浏览器、
+  等接口用例跑完才告诉你 import 顺序错了。乱序的 import 和没格式化的代码在 review 时
+  是纯噪声，让机器去管，人只讨论逻辑。
+  这个 job 是**必须过**的（没有 `continue-on-error`）：`ruff.toml` 立在仓库里很久了，
+  但在此之前没有任何地方执行它——**写在配置里的规矩，不执行就等于没有规矩。**
 - **UI 用例标了 `continue-on-error`**：它们打的是公共 demo 站，外部因素多。
   但失败不阻断流水线 ≠ 可以不管——报告和截图照样产出，需要人去看。
   真实项目里这个开关要慎用，它很容易变成"红灯没人管"的起点。

@@ -196,9 +196,7 @@ class TestIdempotency:
         assert replay_body["order_no"] == second_body["order_no"], (
             f"重放必须返回同一张工单：首次 {second_body['order_no']}，重放 {replay_body['order_no']}"
         )
-        listed = mes.expect_ok(
-            mes.as_role("PLANNER").get("/work-orders", params={"product_code": "FG-TEST-01"})
-        )
+        listed = mes.expect_ok(mes.as_role("PLANNER").get("/work-orders", params={"product_code": "FG-TEST-01"}))
         same = [w for w in listed["items"] if w["order_no"] == fixed]
         assert len(same) == 1, f"成功请求占用键后重放，库里不该多出工单，实际 {len(same)} 条 {fixed}"
 
@@ -427,9 +425,7 @@ class TestLedgerConsistency:
         assert moved == 7000, f"领料 7.000 后可用量应减 7.000，实际少了 {moved / 1000:.3f}"
 
         problems = ledger_balance_chain_errors(factory.db_path)
-        assert not problems, (
-            "流水账实不符 —— 明细在下面：\n" + "\n".join(problems)
-        )
+        assert not problems, "流水账实不符 —— 明细在下面：\n" + "\n".join(problems)
 
 
 # ==================== 权限矩阵：防"越权操作" ====================
