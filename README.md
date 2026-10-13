@@ -323,7 +323,7 @@ pytest -m "not ui" --cov=. --cov-report=term --cov-report=
 python -m pytest -m api ... --cov-fail-under=40
                                         Required test coverage of 40% reached（退出码 0）
 python -m mypy                          Success: no issues found in 54 source files
-python tools/check_retry.py             当前 12/12；按 D9 补第 13 条后会先变 12/13（故意红）
+python tools/check_retry.py             当前 12/12；补上第 13 条（见下文「为什么这里会短暂出现一次红」）后会先变 12/13（故意红）
 ```
 
 > **`-m ui` 的 14 条在本机跑不了**：全部在 setup 阶段失败于
@@ -356,7 +356,8 @@ python tools/check_retry.py             当前 12/12；按 D9 补第 13 条后�
 > 而不是「上一次尝试就是传输失败」，于是一次传输失败之后，**由 5xx 触发的重试也会绕过用户显式配置的代理**。
 >
 > **先加用例、看它红（12/13）、再改代码、再看它绿（13/13）** —— 顺序倒了就没有证据链。
-> 完整步骤见 `逐日操作指南.md` 的 D9。
+> 完整步骤：该自检脚本是 `tools/check_retry.py`（每条自检都有编号注释，现有 12 条），
+> 第 13 条按同一格式补在末尾即可；它钉的分支在 `apis/base.py` 的 `request()` / `_should_retry()`。
 
 > 接口用例跑的是公网 `jsonplaceholder.typicode.com`。这个站会**限流**：
 > 短时间内连续跑多轮全量用例，会开始返回 429 或直接读超时。
@@ -532,8 +533,9 @@ docker compose -f docker-compose.yml config --quiet
 >
 > 另外两条与容器相关的实际约束：镜像基于 `python:3.12-slim`，**里面没有 curl**，
 > 所以 compose 的 healthcheck 用 `python -c "import urllib.request; ..."` 而不是 curl；
-> `Dockerfile` 里是**精确 COPY 各个目录**而不是 `COPY . .`，
-> 因为仓库没有 `.dockerignore`，`COPY . .` 会把 `.venv/`（几百 MB）和 `.git/` 一起灌进去。
+> `Dockerfile` 里是**精确 COPY 各个目录**而不是 `COPY . .`：
+> 构建上下文的体积由根目录的 `.dockerignore` 负责（它已排除 `.venv/`、`.tmp/`、`.git/` 等），
+> 而镜像里有哪些文件由这份精确 COPY 清单负责 —— 两者解决的不是同一件事，所以两者都保留。
 
 **8. `pre-commit install` 卡住 / 报 `ensurepip` 权限错误**
 
