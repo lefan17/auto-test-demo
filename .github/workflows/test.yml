@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Python 3.12
         uses: actions/setup-python@v5
@@ -79,7 +79,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Python 3.12
         uses: actions/setup-python@v5
@@ -113,7 +113,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Python 3.12
         uses: actions/setup-python@v5
@@ -397,7 +397,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Python 3.12
         uses: actions/setup-python@v5
@@ -452,7 +452,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Python 3.12
         uses: actions/setup-python@v5
@@ -496,7 +496,7 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # 需要历史提交才能校验，默认的浅克隆（depth 1）拿不到。
           fetch-depth: 30
