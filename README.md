@@ -572,4 +572,3 @@ python -c "from common.config import get_config; import json; print(json.dumps(g
 逐字节一致——这是硬约束，改动配置加载器时必须保持。
 `TEST_ENV` 给了不认识的值会直接抛 `ValueError` 并列出可用档案，**不会静默回落到默认档**：
 静默回落意味着"以为在测 staging，实际打的是 dev"。
-

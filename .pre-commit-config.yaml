@@ -32,6 +32,13 @@ repos:
       - id: trailing-whitespace
       - id: check-yaml
       - id: check-json
+        # .vscode/ 下三个文件（launch / settings / extensions）写的是 JSONC：
+        # VS Code 允许 `//` 行注释，标准 JSON 不允许，check-json 因此必然报
+        # "Expecting property name enclosed in double quotes"。
+        # 不能靠删注释来解决——那些注释是写给协作者看的（"这个配置是干什么的"
+        # 比配置本身更难还原）。JSONC 的标准处理就是让 JSON 校验器跳过它，
+        # 编辑器自己会校验这三份文件，漏检风险不在这一侧。
+        exclude: '^\.vscode/'
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
@@ -41,6 +48,15 @@ repos:
         # 仓库设了 core.autocrlf=true，这个 hook 会把 CRLF 归一成 LF。
         # 不设 --fix=lf 的话它会直接失败并提示手工处理，在 Windows 上很不友好。
         args: [--fix=lf]
+        # 但 *.ps1 / *.cmd / *.bat 必须排除掉：这两条规则会互相打架，且永远打不平。
+        # .gitattributes 里明写 `*.ps1 text eol=crlf`（Windows 脚本缺 CRLF 时
+        # 部分环境直接无法执行），而这个 hook 的判据是"文件里不能混用行尾"，
+        # 它会把这些脚本刷成 LF；随后 git 按属性把它们当 CRLF 检出/入库，
+        # 于是每次 pre-commit 都"修好"一批文件、git 又反弹回来。
+        # 同一批文件的行尾只能有一个权威：仓库已经用 .gitattributes 声明了它，
+        # 这里就让出管辖权，而不是把 --fix=lf 改成 --fix=crlf（那会让全仓
+        # 其余几百个 LF 文件反过来被刷成 CRLF，冲突面更大）。
+        exclude: '\.(ps1|cmd|bat)$'
 
   # 提交信息规范：本机没有 Node/npm 也可用（见文件头说明）。
   # extra 里放的是**可 grep 的规范文档地址**，不是装饰。
