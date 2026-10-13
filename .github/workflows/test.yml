@@ -263,7 +263,7 @@ jobs:
 
       - name: 上传测试报告（可在 Actions 页面下载）
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: allure-report
           path: allure-report/
@@ -275,7 +275,7 @@ jobs:
       # 路径不存在，截图从来没被上传过。
       - name: 上传失败截图
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-screenshots
           path: testcases/ui/artifacts/
