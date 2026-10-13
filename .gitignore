@@ -40,3 +40,12 @@ Thumbs.db
 
 # pytest 的 basetemp 残留目录：若落在仓库根目录，会因 ACL 不可读导致 ruff panic
 pytest-of-*/
+
+# 静态检查 / 依赖管理的缓存目录。
+# mypy 的缓存有 MB 级，且它会记录"上次哪些文件是干净的"——
+# 提交进版本库会让别人机器上的增量检查结果变得不可信。
+# pip-tools 的缓存默认写在家目录（受限环境下不可写，需用 PIP_TOOLS_CACHE_DIR
+# 指到仓库内），所以这里必须忽略，否则会跟着提交上来。
+.mypy_cache/
+.ruff_cache/
+.piptools-cache/

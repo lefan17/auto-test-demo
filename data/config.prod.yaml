@@ -1,0 +1,31 @@
+# prod 档案：由 TEST_ENV=prod 选中（见 common/config.py）。
+#
+# 这个档案存在的意义不是"支持在生产上跑全量用例"——那样做既不安全也没有意义。
+# 它的用途是两类**只读**检查：
+#   1. 发版前的线上冒烟（pytest -m smoke，只读接口）；
+#   2. 线上环境的只读契约巡检（pytest -m api -k "list or get"）。
+# 因此 prod 档案里**不放任何写操作需要的数据**，账号也留空——
+# 需要账号的用例（创建/更新/加购）在 prod 上本就不该跑，
+# 留空会让它们以"缺少凭据"的清晰方式失败，而不是拿 dev 账号去写生产库。
+#
+# 地址同样是 RFC 2606 保留后缀的占位符，替换成真实入口前不要指望它能跑通。
+
+base:
+  api: "https://api.prod.invalid"
+  ui: "https://web.prod.invalid"
+
+user:
+  # 有意留空：生产环境不该出现测试账号。真要用只读账号，从 CI secret 注入，
+  # 不要写进版本库（这个文件是公开仓库的一部分）。
+  valid:
+    username: ""
+    password: ""
+  locked:
+    username: ""
+    password: ""
+  invalid:
+    username: "wrong_user"
+    password: "wrong_password"
+
+data:
+  expected_user_count: 0

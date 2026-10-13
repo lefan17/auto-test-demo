@@ -1,0 +1,111 @@
+# 本地/CI 起被测服务的编排文件。
+#
+# 为什么要把两个被测服务也放进 compose：
+# 这个仓库的用例本来就能自己拉服务（testcases/mes/conftest.py 起 mock_server、
+# testcases/login/conftest.py 起 login_app）。那一套适合"跑一次就收工"。
+# 但接入真实流水线时更常见的形态是：**服务常驻、用例按需连过去**——
+# 服务重启一次要等好几秒，而回归可能一天跑几十次；
+# 服务崩溃时"用例全红"和"服务没起来"是两种完全不同的排查方向，
+# 常驻服务配合 healthcheck 能把这两件事分开。
+#
+# 用法：
+#   docker compose up -d mock-server login-app     # 起两个被测服务
+#   docker compose --profile test run --rm tests   # 再跑一遍用例
+#   docker compose down                            # 收工
+#
+# ⚠️ 本机（Windows + WSL E_ACCESSDENIED）Docker daemon 起不来，
+# 这份文件只做过静态校验（docker compose config --quiet），**没有真实构建和运行过**。
+# 构建结果需在 daemon 可用的机器上验证。
+
+name: auto-test-demo
+
+services:
+  # 被测服务一：MES Mock 后端（工单状态机 / 库存 / 幂等 / 并发）
+  mock-server:
+    build:
+      context: .
+    image: auto-test-demo:local
+    command:
+      - python
+      - -m
+      - mock_server.run
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    # 映射到宿主机 18000：本机经常已经有手工起的 mock_server 占着 8000，
+    # 直接映射 8000 会让 `up` 报端口占用，而那个实例往往是在跑别的用例。
+    ports:
+      - "18000:8000"
+    environment:
+      # 库落在容器内固定路径。挂卷是部署话题，这里不预设，
+      # 否则 `up` 会因宿主机目录权限问题在 CI 上换个地方失败。
+      MOCK_DB_PATH: /app/var/mes.db
+    healthcheck:
+      # 用 python 而不是 curl：python:3.12-slim 里没有 curl，
+      # 为了 healthcheck 再装一个包不划算，而 python 反正一定在。
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # 被测服务二：登录服务（故意带 6 个已知缺陷，供契约与探针用例使用）
+  login-app:
+    build:
+      context: .
+    image: auto-test-demo:local
+    command:
+      - python
+      - -m
+      - login_app.run
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5001"
+    ports:
+      - "15001:5001"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # 测试运行器：默认**不**随 up 启动（放在 test profile 里）。
+  # 否则每次起服务都会顺带跑一遍全量用例，而"起环境"和"跑用例"是两件事。
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+    image: auto-test-demo:local
+    depends_on:
+      mock-server:
+        condition: service_healthy
+      login-app:
+        condition: service_healthy
+    environment:
+      # 环境分层：TEST_ENV 选 dev / staging / prod（见 common/config.py）。
+      # 这里默认 dev，即 data/config.yaml。
+      TEST_ENV: "${TEST_ENV:-dev}"
+    volumes:
+      # 报告与失败截图拿出来，否则容器一删就没了。
+      - ./allure-results:/app/allure-results
+      - ./testcases/ui/artifacts:/app/testcases/ui/artifacts
+    command:
+      - python
+      - -m
+      - pytest
+      - -m
+      - not ui
+      - --alluredir=/app/allure-results

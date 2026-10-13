@@ -1,0 +1,71 @@
+# Dependabot：依赖与 action 的版本过期提醒。
+#
+# 为什么分 pip 与 github-actions 两个 ecosystem：
+# 两者过期的方式完全不同。pip 那边的新版本是"上游发了新版"，
+# 而 github-actions 那边更阴——它常常不是"有新版本"，而是
+# **旧的 action 引用开始失效**（本仓库真实踩过：simple-elf/allure-report-action@v1.9
+# 依赖的基础镜像 openjdk:8-jre-alpine 被 Docker Hub 下架，整个 job 在第一步就失败，
+# 连测试都没跑到）。这类腐烂不会有 CVE 提醒，只能靠版本更新巡检发现。
+#
+# 为什么是 weekly 而不是 daily：
+# 这是一份测试框架，依赖不与用户流量直接相关，也没有"当天必须修"的漏洞面。
+# daily 的代价是每天多出几条通知——通知一多就没人看了，
+# 而"没人看的安全通知"和没有通知是等价的。weekly 是能长期维持的频率。
+
+version: 2
+updates:
+  # Python 依赖：从 requirements.txt 读版本约束。
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    # 分组：一次 PR 只动一类东西，review 时能判断"这次变化的性质"。
+    # 不分组的话，某个周一可能同时开来 8 个 PR，review 成本会让它们一直堆着，
+    # 最后全部过期关闭——那还不如不提醒。
+    groups:
+      pytest-stack:
+        patterns:
+          - "pytest*"
+          - "coverage"
+      fastapi-stack:
+        patterns:
+          - "fastapi"
+          - "uvicorn"
+          - "pydantic"
+          - "starlette"
+      http-stack:
+        patterns:
+          - "requests"
+          - "jsonschema"
+          - "PyYAML"
+      playwright:
+        patterns:
+          - "playwright*"
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      # 让 Dependabot 自己的提交也符合仓库的 Conventional Commits 规范，
+      # 否则它们过不了 commit-msg hook（见 scripts/check_commit_msg.py）。
+      prefix: "chore"
+      include: "scope"
+
+  # GitHub Actions：这个 ecosystem 的价值比 pip 那边更高——
+  # action 的旧版本失效是"静默腐烂"，pip 那边至少还有安全通告。
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"

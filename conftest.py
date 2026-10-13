@@ -31,7 +31,7 @@ for _p in (ROOT_DIR, TESTCASES_DIR, LOGIN_DIR, MES_DIR):
         sys.path.insert(0, str(_p))
 
 from apis import PostApi, UserApi  # noqa: E402
-from common.yaml_util import get_config  # noqa: E402
+from common.config import get_config  # noqa: E402
 
 
 # ---------- session 级配置：整个测试会话只读一次文件 ----------

@@ -11,14 +11,20 @@
 
 | 用途 | 选型 |
 |---|---|
-| 测试框架 | pytest 8 + pytest-xdist（并行）+ pytest-cov（覆盖率） |
+| 测试框架 | pytest 8 + pytest-xdist（并行）+ pytest-cov（覆盖率门禁） |
 | 接口测试 | requests + jsonschema + PyYAML |
 | UI 测试 | Playwright 1.48（sync API） |
 | Mock 后端 | FastAPI + SQLite（WAL 模式），仅测试用 |
 | 被测服务 | FastAPI（`login_app/`，故意带 6 个已知缺陷，用于契约与探针用例） |
 | 报告 | Allure |
 | 代码规范 | ruff（配置见 `ruff.toml`，CI 里强制执行） |
-| 持续集成 | GitHub Actions |
+| 类型检查 | mypy（配置见 `pyproject.toml`，CI 里强制执行） |
+| 提交规范 | Conventional Commits（`scripts/check_commit_msg.py`，不依赖 Node） |
+| 依赖管理 | `requirements.txt`（直接依赖）+ `requirements.lock`（完整依赖树，pip-tools 生成） |
+| 安全扫描 | Dependabot（pip + github-actions 每周）+ CI 里的 pip-audit |
+| 容器化 | Dockerfile + docker-compose.yml（两个被测服务） |
+| 环境分层 | `TEST_ENV` 选择 dev / staging / prod（`common/config.py`） |
+| 持续集成 | GitHub Actions（6 个 job，含每周定时夜间回归） |
 
 ## 分层设计
 
@@ -33,8 +39,10 @@ testcases/    用例层       —— 只写业务断言，不出现 requests 和
 ui/pages/     Page Object  —— 元素定位与页面操作
 mock_server/  Mock 后端    —— 工单状态机 / 库存 / 权限 / 幂等，仅测试用
 login_app/    被测服务     —— 登录接口，故意带 6 个已知缺陷（见下）
-data/         数据层       —— config.yaml 配置、users.json 测试数据、schemas.py 契约
-common/       工具层       —— YAML 读取、统一断言封装
+data/         数据层       —— 配置档案（config.yaml / config.staging.yaml /
+                            config.prod.yaml）、users.json 测试数据、schemas.py 契约
+common/       工具层       —— YAML 读取、统一断言封装、环境分层加载（config.py）
+scripts/      工程化脚本   —— 提交信息规范校验（check_commit_msg.py）
 conftest.py   全局 fixture —— 配置、接口对象、报告钩子
 ```
 
@@ -61,6 +69,24 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 playwright install chromium
 ```
 
+> **想装出与 CI 完全一致的依赖树，用 `requirements.lock` 而不是 `requirements.txt`**：
+>
+> ```powershell
+> pip install -r requirements.lock
+> ```
+>
+> 两个文件的分工：`requirements.txt` 是**人维护的**直接依赖（13 个，全部 `==` 钉死版本），
+> 它是唯一真值来源；`requirements.lock` 是 `pip-compile` 生成的**完整传递依赖树**
+> （123 行，含 anyio / certifi / urllib3 / greenlet 等几十个间接包）。
+> 只锁直接依赖的话，传递依赖会随环境漂移——本地和 CI 装的不是同一棵树，
+> 于是"本地绿、CI 红"就会以随机事件的形式出现。
+> 改了 `requirements.txt` 之后要重新生成：
+>
+> ```powershell
+> $env:PIP_TOOLS_CACHE_DIR = "$PWD\.piptools-cache"   # 受限环境下家目录不可写
+> python -m piptools compile requirements.txt --output-file requirements.lock --quiet --strip-extras
+> ```
+
 > **一条命令搞定全部**：直接跑 `.\setup.ps1`，脚本会自动建环境、装依赖（含国内镜像）、
 > 装浏览器并跑一遍接口用例验证。**但注意**：依赖必须先装好，
 > **国内环境**下 PyPI 和 Playwright CDN 都需要换镜像，否则会"看起来卡死"：
@@ -86,13 +112,53 @@ pytest -m smoke             # 只跑冒烟
 pytest -n 4 --dist loadfile # 4 进程并行（见下方说明）
 pytest -k "login"           # 按关键字筛选用例
 pytest --lf                 # 只重跑上次失败的用例
+
+# 带覆盖率门禁（CI 用的就是这套组合）
+pytest -m api -n 4 --dist loadfile --cov=. --cov-report=term --cov-report= --cov-fail-under=40
 ```
+
+### 切换环境档案
+
+配置不再只有一份。用 `TEST_ENV` 选档案，**不设置时行为与以前完全一致**（读 `data/config.yaml`）：
+
+```powershell
+pytest -m api                                # dev（默认）→ data/config.yaml
+$env:TEST_ENV = "staging"; pytest -m api     # → data/config.staging.yaml
+$env:TEST_ENV = "prod";    pytest -m api     # → data/config.prod.yaml
+```
+
+加载器是 `common/config.py` 的 `get_config()`（`conftest.py` 用它取配置）。
+三份档案的差异只有 `base.api` / `base.ui` 两个 host：
+
+| 档案 | `base.api` | `base.ui` |
+|---|---|---|
+| dev（默认） | `https://jsonplaceholder.typicode.com` | `https://www.saucedemo.com` |
+| staging | `https://api.staging.invalid` | `https://web.staging.invalid` |
+| prod | `https://api.prod.invalid` | `https://web.prod.invalid` |
+
+> staging / prod 的 host 用 RFC 2606 保留后缀 `.invalid` 是**故意的**：
+> 占位符如果写成看起来像真的域名，某天就会有人真的把测试流量打上去。
+> `.invalid` 是保证解析失败的，宁可连不上、也不要静默打到真实站点。
+> `data/config.prod.yaml` 里的测试账号也**故意留空**——
+> 生产环境不该存在测试账号，应该用只读账号从 CI secret 注入。
 
 > **关于 `-n` 并行**：加 `--dist loadfile`（按文件分发），不要用默认的按用例分发。
 > 原因是默认分发会把同一个文件里的用例拆到不同进程，fixture 的 session 级复用
 > 就失效了（UI 那边每个进程各启一个浏览器），而且接口用例分散到多个进程后会
 > **同时**打公网接口，更容易触发限流——并行度越高越容易出假失败。
 > 在 CI 或内网环境上跑 `-n auto` 是合理的；对着公共练习站跑并行收益有限。
+>
+> **但这里有一个不只是"收益有限"的问题——默认分发在本仓库是坏的，实测会失败：**
+> `pytest -m mes -n 4 --dist load` → **`30 passed, 1 error`，退出码 1**（两次复现均匀一致）。
+> 报错在 teardown 阶段 `testcases/mes/conftest.py:129` 的会话级数据隔离断言：
+> `AssertionError: 会话结束时数据没有回到基线`。
+> 根因不是并发竞态，是**分发策略与 fixture 作用域错配**：
+> 数据隔离基线（`baseline_counts`）与收尾回收断言都是 `scope="session"` 的，
+> 按用例分发会把同一个文件的用例拆到不同 worker，
+> 于是"A worker 的收尾快照"对不上"B worker 造的脏数据"。
+> 按文件分发（`loadfile`）让一个文件整体落在同一个 worker，作用域闭合，因而干净。
+> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测 26.42s → 12.03s，约 2.2×），
+> 而 `-m mes` / `-m login` / `-m ui` **刻意不开**，理由见"持续集成"一节。
 
 ### 生成报告
 
@@ -232,32 +298,52 @@ pytest --html=report.html --self-contained-html
 
 ## 当前实测结果
 
-> 采集时间 **2026-10-03**（Windows 本机，公网接口用例受网络影响会有波动）。
+> 采集时间 **2026-10-13**（Windows 本机，Python 3.12.10，公网接口用例受网络影响会有波动）。
 > **一个容易看错的点**：`api` 与 `mes`、`login` 三个标记有**重叠** ——
 > `testcases/mes/` 的用例同时打了 `mes` 和 `api`，`testcases/login/` 的同时打了
 > `login` 和 `api`。所以 `-m api` 选到 92 条（33 条纯接口 + 30 条 MES + 29 条登录），
 > **这些数字不能相加**。全量共 106 条 = 33 接口 + 14 UI + 30 MES + 29 登录。
+> 也正因为 `-m api` 与 `-m "not ui"` 的**选取集完全相同**，覆盖率门禁挂在前者身上。
 
 ```text
-pytest --collect-only -q             106 tests collected
+pytest --collect-only -q                106 tests collected
 
-pytest -m login  29 passed, 77 deselected in  1.59s   # 本地服务，无需公网
-pytest -m api    92 selected, 14 deselected           # 不含登录用例（.github 里分开跑）；需公网，本机未跑
-pytest -m ui     14 passed, 92 deselected in 27.26s
-pytest -m mes    30 passed, 76 deselected in  6.95s
-pytest testcases/api testcases/login  62 tests collected
-python tools/check_retry.py           当前 12/12；按 D9 补第 13 条后会先变 12/13（故意红）
+pytest -m "not ui"                      92 passed, 14 deselected in 26.42s
+pytest -m api                           92 passed, 14 deselected in 25.39s
+pytest -m mes                           30 passed, 76 deselected in  8.67s
+pytest -m login                         29 passed, 77 deselected in  1.66s
+pytest -m ui                            14 failed（本机沙箱限制，见下）
+
+pytest -m api -n 4 --dist loadfile      92 passed in 12.03s      # 墙钟约 2.2× 加速
+pytest -m mes -n 4 --dist loadfile      30 passed in 12.24s      # 反而比串行(8.67s)慢
+pytest -m mes -n 4 --dist load          30 passed, 1 error       # 退出码 1，见下
+
+pytest -m "not ui" --cov=. --cov-report=term --cov-report=
+                                        TOTAL 2889 1621 44%（43.89%）
+python -m pytest -m api ... --cov-fail-under=40
+                                        Required test coverage of 40% reached（退出码 0）
+python -m mypy                          Success: no issues found in 54 source files
+python tools/check_retry.py             当前 12/12；按 D9 补第 13 条后会先变 12/13（故意红）
 ```
 
-> 上面 `-m mes` / `-m login` / `--collect-only` 三个数字是本机实跑输出；
-> `-m api` 与 `-m ui` 依赖公网 `jsonplaceholder` 与本机 Chrome，**本机没有跑**，
-> 只给出 `--collect-only` 的选取条数（`-m api` 92 选 14 去、`-m ui` 14 选 92 去），
-> 耗时沿用上一次有网络环境时的记录。
-
-> **为什么 `-m mes` 的 deselected 是 76**：deselected = 全量 106 − 选中 30。
+> **`-m ui` 的 14 条在本机跑不了**：全部在 setup 阶段失败于
+> `PermissionError: [WinError 5]`（当前沙箱禁止 asyncio 建进程管道），
+> 属**环境限制，不是用例缺陷**。所以这一行给的是实跑结果而不是"通过"。
+> 上一版文档在这里写的 `14 passed ... in 27.26s` 采自另一台机器。
+>
+> **`-m mes` 的 deselected 为什么是 76**：deselected = 全量 106 − 选中 30。
 > 旧文档这里写的是 47（按"全量 76"算出来的老快照），与 `--collect-only` 报告的 106
 > 自相矛盾，已按实跑输出订正；`-m mes` 选中数从 29 变成 30，
 > 是因为补了一条"流水账面余额链"用例（见 `docs/测试有效性说明.md`）。
+>
+> **覆盖率 43.89% 是低估，不是高估**：`mock_server/*` 的覆盖率**恒为 0%**
+> （共 1358 条 statements，逐模块清单见 workflow 内注释）。原因不是没测，
+> 而是**进程边界**——mock_server 由 fixture 以 subprocess 拉起，
+> 而 coverage 只统计它自己所在进程内的执行。而这 1358 条恰恰是**被测得最狠**的代码
+> （30 条 MES 用例全打在它上面）。所以门禁定在 40% 而不是 43.89%：
+> 门禁的意义是拦住覆盖率**退化**，不是卡住当前值。
+> 想让它们进统计，需要给子进程加 `-m coverage run --parallel-mode`
+> 再 `coverage combine`——这是一个独立的工程任务，本机未做。
 
 > **登录用例是这套用例里"最划算"的一组**：29 条跑完只要 1.34 秒，
 > 而接口用例 33 条要 3 分多钟——差别在登录用例打的是**本地进程**，
@@ -287,28 +373,76 @@ python tools/check_retry.py           当前 12/12；按 D9 补第 13 条后会�
 
 ## 持续集成
 
-推送到 `main` 分支自动触发，分两个 job：
+推送到 `main`、开 PR、手动点按钮，以及**每周一凌晨的定时回归**都会触发。共 **6 个 job**：
 
-- **`lint`**：`ruff check .` + `ruff format --check .`，规则全部来自仓库根的 `ruff.toml`。
-- **`test`**：安装依赖 → 跑接口用例 → 跑 UI 用例 → 跑业务全链路 → 跑登录契约 → 生成 Allure 报告。
+| job | 做什么 | 失败会拦流水线吗 |
+|---|---|---|
+| `lint` | `ruff check .` + `ruff format --check .`（规则全部来自仓库根的 `ruff.toml`） | ✅ 拦 |
+| `typecheck` | `python -m mypy`（配置来自 `pyproject.toml`） | ✅ 拦 |
+| `test` | 跑四组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约）+ 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
+| `security` | `pip-audit --requirement requirements.lock --strict` | ❌ 不拦（见下） |
+| `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂 | ✅ 拦 |
+| `commit-convention` | 拿最近 30 条真实提交跑 `scripts/check_commit_msg.py` | ✅ 拦（逐条警告，不聚合） |
 
-两个 job 并行跑。报告在 Actions 页面的 Artifacts 里下载（`allure-report`），失败截图在 `ui-screenshots`。
+报告在 Actions 页面的 Artifacts 里下载（`allure-report`），失败截图在 `ui-screenshots`。
 
-三个刻意的设计：
+### 几个刻意的设计
 
-- **lint 单独开一个 job**：规范检查几秒钟就出结果，没必要等 playwright 装浏览器、
+- **`lint` / `typecheck` 单独开 job**：规范检查几秒钟就出结果，没必要等 playwright 装浏览器、
   等接口用例跑完才告诉你 import 顺序错了。乱序的 import 和没格式化的代码在 review 时
   是纯噪声，让机器去管，人只讨论逻辑。
-  这个 job 是**必须过**的（没有 `continue-on-error`）：`ruff.toml` 立在仓库里很久了，
+  这些 job 是**必须过**的（没有 `continue-on-error`）：`ruff.toml` 立在仓库里很久了，
   但在此之前没有任何地方执行它——**写在配置里的规矩，不执行就等于没有规矩。**
 - **UI 用例标了 `continue-on-error`**：它们打的是公共 demo 站，外部因素多。
   但失败不阻断流水线 ≠ 可以不管——报告和截图照样产出，需要人去看。
   真实项目里这个开关要慎用，它很容易变成"红灯没人管"的起点。
+- **`security` 非阻塞**：pip-audit 查的是**公共漏洞库的当前状态**，而不是这份代码的质量。
+  今天全绿、明天可能因为某个传递依赖被披露了 CVE 而变红，那与本次提交毫无关系。
+  设成阻塞等于让"上游披露漏洞"变成"任何人的 PR 都过不去"，最后一定是有人把它删掉。
+  正确做法是让它红并**通知到人**，由人决定升级还是接受风险。
+  扫的是 `requirements.lock` 而不是 `requirements.txt`：锁文件里是**实际会被安装的完整传递依赖树**，
+  而绝大多数 CVE 出现在传递依赖上（urllib3 / certifi / anyio 之类），只扫直接依赖等于漏掉大半攻击面。
 - **Allure 用官方命令行生成，不用第三方 Docker action**。原来用的
   `simple-elf/allure-report-action@v1.9` 依赖镜像 `openjdk:8-jre-alpine`，
   该镜像已被 Docker Hub 下架，报 `failed to resolve source metadata`，
   结果整个 job 在第一步就失败、连测试都没跑到。第三方 action 的这种腐烂
   是真实工程里常见的一类风险：**引用别人的东西，就要承担它某天消失的代价。**
+
+### 并行、超时、定时与通知
+
+- **`-m api` 开 `-n 4 --dist loadfile`**（实测 26.42s → 12.03s，约 2.2×）。
+  必须是 `loadfile`：默认的 `--dist load` 在本仓库实测 `-m mes` → `30 passed, 1 error`（退出码 1），
+  根因见上方"关于 `-n` 并行"。
+- **`-m mes` / `-m login` / `-m ui` 刻意不开并行**，三条理由都基于实测：
+  ①`-m mes -n 4 --dist loadfile` 反而**更慢**（12.24s vs 串行 8.67s）——只有 2 个测试文件，
+  2 个 worker 拿不到什么活，却要付两次"造一个独立 SQLite + 起一个 mock_server 子进程"的启动成本；
+  ②这组用例里有**真实线程交叠**的竞态断言（`testcases/mes/concurrency.py` 的
+  `assert_requests_overlapped`，靠 `threading.Barrier` 让请求同时在途），
+  把机器塞满并行 worker 会拉长每个请求的墙钟、让交叠判据的边界变窄——
+  虽然实测在 loadfile 下仍绿（`-n 8` 连跑 3 次 30 passed），但在它自己该守的那一步上，
+  没有任何理由去引入这份不确定性；③它在 CI 上本来就快（本机 9.4s），
+  省下的几秒换不来"并发判据的可信度"。
+  **一句话：能不省的地方就不省——性能门禁和并发断言的价值全在于它说了实话。**
+- **每个 job 都有 `timeout-minutes`**：一个卡死的 job 不设上限会占满默认的 360 分钟，
+  把并发名额全部堵住。现在是 lint 10 / typecheck 15 / test 45 / security 15 / pre-commit 15 / commit-convention 10。
+- **`concurrency` 只取消 PR 上的旧任务**：连续推 3 个提交修同一处时，
+  前两次的流水线已经没有意义，让它们继续跑既占名额又会在 Actions 页面刷出一片过期的红叉。
+  但 **`main` 上的 push 必须全部跑完**——每次合并到 main 都可能引入问题，漏掉任何一次都是"没测过就进主干"。
+- **每周一凌晨的定时回归**（`cron: "0 18 * * 1"`，UTC）= 北京时间**周二 02:00**，
+  在工作日开始前拿到结果，且跑的是没人在改代码的时间点。
+  为什么需要它：push/PR 触发只能发现"这次改动弄坏了什么"，
+  **发现不了时间带来的腐烂**——某个依赖发了新版、公网站点改了响应、
+  runner 镜像换了 Python 补丁版本、Allure 的 npm 包发了破坏性更新。
+  没有定时跑，这类问题会在某次无关的 PR 上突然爆出来，然后被当成"那个 PR 的锅"。
+- **失败通知不需要任何外部 secret**，走两条路：
+  ①`if: failure()` 把诊断信息（触发方式 / 分支 / 提交 / 执行者 / run 链接 + 排查顺序）写进 step summary。
+  ②仅在 `push` 到 main 与定时回归时，用**内置的 `GITHUB_TOKEN`** 自动开或更新一个 issue
+  （靠固定 label `ci-failure` 去重，同一时间只留一个未关闭的告警）。
+  排除 PR 是因为 fork 来的 PR token 是只读的，开 issue 必然 403，那种失败会盖住真正的测试失败。
+  > 想接企业微信 / 飞书 / Slack 的话，需要配一个 webhook secret 再在 workflow 里引用它。
+  > 这里**没有**写任何引用不存在 secret 的步骤——那会让 workflow 直接报错，
+  > 而且报错信息还指不到真正的地方。要加的时候请先配好 secret 再加步骤。
+
 
 生成报告这步特意**没有**用 `allure generate --clean`：
 
@@ -373,3 +507,69 @@ python -c "from playwright.sync_api import sync_playwright as s; p=s().start(); 
 > 注意：**这一步要用 PowerShell 做，不要用 Python 脚本做**。受限环境下 Python 进程写工作区外
 > 会直接 `PermissionError: [WinError 5] 拒绝访问`，而 PowerShell 可以。
 > 版本号 `1140` 是 Playwright 1.48 对应的 Chromium 版本号，换版本时以 `--dry-run` 的输出为准。
+
+**7. 用 Docker 跑这套用例**
+
+```powershell
+# 起两个被测服务（Mock 后端 8000、登录服务 5001，分别映射到宿主机 18000 / 15001）
+docker compose up -d mock-server login-app
+
+# 跑用例（第三个 service 挂在 test profile 下，不会跟着 up 一起起）
+docker compose run --rm tests
+
+# 不跑容器，只检查 compose 文件本身写得对不对
+docker compose -f docker-compose.yml config --quiet
+```
+
+> ⚠️ **本仓库的容器化只做过静态校验，从未在本机构建成功过。**
+> 本机 Docker 客户端 29.7.2 与 Compose v5.5.0 都在，但 **daemon 起不来**
+> （WSL 报 `E_ACCESSDENIED`；`docker compose config` 不需要 daemon 所以能过，
+> 而 `docker build` 会失败于 `failed to connect to the docker API at
+> npipe:////./pipe/dockerDesktopLinuxEngine; ... The system cannot find the file specified.`）。
+> 所以：`docker compose -f docker-compose.yml config --quiet` 退出码 0 是**已验证**的；
+> **"镜像能构建""容器能跑通"是未验证的**，需要在 daemon 可用的机器上补测。
+> 这份文档里任何地方都不声称构建成功。
+>
+> 另外两条与容器相关的实际约束：镜像基于 `python:3.12-slim`，**里面没有 curl**，
+> 所以 compose 的 healthcheck 用 `python -c "import urllib.request; ..."` 而不是 curl；
+> `Dockerfile` 里是**精确 COPY 各个目录**而不是 `COPY . .`，
+> 因为仓库没有 `.dockerignore`，`COPY . .` 会把 `.venv/`（几百 MB）和 `.git/` 一起灌进去。
+
+**8. `pre-commit install` 卡住 / 报 `ensurepip` 权限错误**
+
+部分受限环境（企业电脑、沙箱）禁止创建虚拟环境，`ensurepip` 会以
+`PermissionError: [WinError 5]` 失败——**pre-commit 装不上**。
+`.pre-commit-config.yaml` 仍然是有意义的，它**只在 CI 里验证**
+（workflow 的 `pre-commit` job 会跑 `pre-commit run --all-files`）。
+装不上的机器上，提交前手工跑一遍等价命令即可：
+
+```powershell
+python -m ruff check .
+python -m ruff format --check .
+```
+
+**9. `pip-audit` 在本地跑不起来**
+
+同样的 `ensurepip` 限制。依赖安全扫描**只在 CI 的 `security` job 里跑**，
+而且是**非阻塞**的（理由见"持续集成"一节）。
+想在本地查，可以 `pip install pip-audit` 后手工跑，但注意它会创建虚拟环境。
+
+**10. `python -m mypy` 报 `PermissionError` 指向 `pip-build-tracker-*`**
+
+如果之前用 `TEMP` 指到项目内的方式装过依赖，仓库根目录会留下
+`pip-build-tracker-*` / `pip-ephem-wheel-cache-*` / `pip-install-*` / `pip-unpack-*`
+这些临时目录，**且权限不可读**。`mypy .`（遍历整个仓库）撞上它们会直接崩溃。
+`pyproject.toml` 里已经用 `files = [...]` 显式列出要检查的目录来绕开这个问题，
+不依赖"仓库根目录干净"。这些目录也已在 `.gitignore` 里。
+
+**11. 想确认 `TEST_ENV` 到底选中了哪份配置**
+
+```powershell
+python -c "from common.config import get_config; import json; print(json.dumps(get_config(), indent=2, ensure_ascii=False))"
+```
+
+不设 `TEST_ENV` 时它的输出与旧实现（`common.yaml_util.get_config()` 直接读 `config.yaml`）
+逐字节一致——这是硬约束，改动配置加载器时必须保持。
+`TEST_ENV` 给了不认识的值会直接抛 `ValueError` 并列出可用档案，**不会静默回落到默认档**：
+静默回落意味着"以为在测 staging，实际打的是 dev"。
+

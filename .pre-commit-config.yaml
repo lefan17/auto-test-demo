@@ -1,0 +1,55 @@
+# 提交前本地把关：把 CI 里会拦人的检查前移到提交那一刻。
+#
+# 为什么值得装：CI 的反馈周期是"推上去、等 runner 排队、等依赖装完"，
+# 一次 import 顺序错误要几分钟才知道。本地 hook 是秒级反馈。
+# 这不是"更严格"，只是把同一套检查**换个更早的时间点**执行——
+# 检查项与 CI 保持完全一致（ruff 用仓库根的 ruff.toml，不传额外参数），
+# 否则会出现"本地过了 CI 挂"这种最消耗信任的失败。
+#
+# ⚠️ 本机（Windows 沙箱）装不上 pre-commit：pip 创建虚拟环境时的 ensurepip
+# 被拒绝（PermissionError: [WinError 5]），`pip install pre-commit` 实测挂起超过 300 秒无返回。
+# 因此这份配置**未在本机执行过**，只在 CI 中验证（见 .github/workflows/test.yml 的 pre-commit 步骤）。
+# 本机可用的等价命令是直接跑 `python -m ruff check .` 与 `python -m ruff format --check .`。
+
+repos:
+  # 官方 ruff 仓：用仓库自己 pin 的版本，而不是 latest。
+  # 浮动版本会让"本地绿、CI 红"变成随机事件（ruff 的规则集与 format 输出会随版本变），
+  # 这与 CI 里把 ruff 版本写死的理由完全一致。
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff
+        # 与 CI 一致：只检查不自动改。自动改文件会让"提交的内容"和"检查的内容"不一致。
+        args: [--no-fix]
+      - id: ruff-format
+
+  # 基础卫生检查：这些是"不该进版本库的东西"的最后一道网，
+  # 成本几乎为零，但能拦住合并冲突标记、私钥、超大文件这类事故。
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+      - id: mixed-line-ending
+        # 仓库设了 core.autocrlf=true，这个 hook 会把 CRLF 归一成 LF。
+        # 不设 --fix=lf 的话它会直接失败并提示手工处理，在 Windows 上很不友好。
+        args: [--fix=lf]
+
+  # 提交信息规范：本机没有 Node/npm 也可用（见文件头说明）。
+  # extra 里放的是**可 grep 的规范文档地址**，不是装饰。
+  - repo: local
+    hooks:
+      - id: commit-msg-convention
+        name: commit message convention (Conventional Commits)
+        entry: python scripts/check_commit_msg.py
+        language: system
+        stages: [commit-msg]
+        always_run: true
+        pass_filenames: true

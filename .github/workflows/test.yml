@@ -1,12 +1,31 @@
 name: Auto Test
 
-# 触发时机：推送 / PR / 手动点按钮
+# 触发时机：推送 / PR / 手动点按钮 / 每周夜间回归
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+  # 定时回归：每周一 UTC 18:00（北京时间周二凌晨 02:00）。
+  # 为什么需要它——push/PR 触发只能发现"这次改动弄坏了什么"，
+  # 发现不了**时间带来的腐烂**：某个依赖发了新版、公网站点改了响应、
+  # GitHub runner 镜像换了 Python 补丁版本、Allure 的 npm 包发了破坏性更新。
+  # 没有定时跑，这类问题会在某次无关的 PR 上突然爆出来，然后被当成"那个 PR 的锅"。
+  # 排在周一凌晨（UTC 18:00 是北京时间周二 02:00）：在工作日开始前拿到结果，
+  # 且跑的是**没人在改代码**的时间点——失败了不会和某次提交混淆。
+  schedule:
+    - cron: "0 18 * * 1"
+
+# 同一分支的重复触发只保留最新的一个，取消排队中的旧任务。
+# 场景：连续推 3 个提交修同一处，前两次的流水线已经没有意义了——
+# 让它们继续跑既占 runner 名额，又会在 Actions 页面刷出一片过期的红叉。
+# 注意：只有 pull_request 事件取消旧的，main 分支上的 push 必须全部跑完——
+# 每次合并到 main 都可能引入问题，漏掉任何一次都是"没测过就进主干"。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # 代码规范：仓库里早有 ruff.toml（line-length / target-version / select 都写好了），
@@ -15,6 +34,10 @@ jobs:
   # 没必要等 playwright 装浏览器、等 api 用例跑完才告诉你 import 顺序错了。
   lint:
     runs-on: ubuntu-latest
+    # 上限 10 分钟：lint 正常 20 秒内跑完，10 分钟还没结束一定是卡在
+    # pip 下载或 GitHub 服务异常上。没有上限的话一个卡死的 job 会占满
+    # 默认的 360 分钟，把并发名额全部堵住。
+    timeout-minutes: 10
 
     steps:
       - name: 检出代码
@@ -24,6 +47,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # 之前只有 test job 有 cache: pip，lint job 每次都在裸装 ruff。
+          # pip 缓存是按 requirements/约束文件的内容算 key 的，
+          # 这个 job 不装 requirements.txt，所以它缓存的是 ruff 那个 wheel——
+          # 命中率不高但零成本，而且能省掉每次 ~15 秒的下载。
+          cache: pip
 
       # 版本写死，不装 latest：ruff 的规则集和 format 输出会随版本变，
       # 浮动版本会让"本地绿、CI 红"变成随机事件。
@@ -41,8 +69,47 @@ jobs:
       - name: ruff format --check（格式规范）
         run: ruff format --check .
 
+  # 静态类型检查：单独一个 job，与 lint 分开。
+  # 理由与 lint 独立于 test 一样——mypy 比 ruff 慢（要读全仓 + 建缓存），
+  # 但远快于装 Playwright 和跑 92 条用例。把它挂在 test job 里，
+  # 一个类型标注错误要等两分钟才知道。
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # 注意这里要装**完整的 requirements.txt**，不能只装 mypy。
+      # 原因：本仓库的 [tool.mypy] 开了 ignore_missing_imports（第三方库没有
+      # py.typed 标记），但那不代表依赖装不装无所谓——mypy 对"已安装但无类型标注"
+      # 和"根本没安装"的处理路径不同，只装 mypy 得到的结论与本地不一致，
+      # 会变成"本地绿、CI 红"的经典事故。
+      # 本地实测：装齐依赖后 `python -m mypy` → 0 errors（54 source files）。
+      - name: 安装依赖（与 test job 同一份约束）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "mypy==2.4.0"
+
+      # 配置全部来自 pyproject.toml 的 [tool.mypy]；
+      # 检查范围（files）与已知技术债的逐模块登记也都在那里，这里不传参数。
+      - name: mypy（静态类型检查）
+        run: python -m mypy
+
   test:
     runs-on: ubuntu-latest
+    # 上限 45 分钟。串行跑完四组用例 + 装 Playwright + 生成 Allure 报告，
+    # 正常在 6-10 分钟。45 分钟既留足了公网接口重试的余量，
+    # 又不会让一个真卡死的 job 占满默认的 360 分钟额度。
+    timeout-minutes: 45
 
     steps:
       - name: 检出代码
@@ -69,15 +136,77 @@ jobs:
       - name: 安装 Playwright 浏览器
         run: playwright install chromium --with-deps
 
-      - name: 运行接口自动化
-        run: pytest -m api --alluredir=allure-results
+      # ---------------------------------------------------------------------
+      # 关于 -n（pytest-xdist）的取舍——这是本文件里唯一一处"看起来不专业"的选择
+      # ---------------------------------------------------------------------
+      # 本机实测（Windows，92 条 not ui）：
+      #   串行 26.42s / 27.41s / 28.30s   ← 三次
+      #   -n 4 --dist loadfile  12.03s / 12.25s / 12.59s
+      # 所以这一组**开** -n 4 --dist loadfile，约 2.2x 加速。
+      #
+      # 为什么必须是 loadfile 而不是默认的 load：
+      # 实测 `-m mes -n 4 --dist load` → **30 passed, 1 error, EXIT=1**
+      # （两次复现：6.46s / 6.09s）。报错是 teardown 阶段
+      # `testcases/mes/conftest.py:129` 的会话级数据隔离断言：
+      #   AssertionError: 会话结束时数据没有回到基线
+      #   available_milli 3270.000 -> 3268.000（-2.000）
+      #   issued_milli       0.000 ->    2.000（+2.000）
+      # 原因：MES 的数据隔离基线（`baseline_counts`，session 作用域）与
+      # 会话结束时的回收断言是**按 worker 各算一份**的，默认的 load 模式
+      # 会把同一文件的用例拆到不同 worker，于是"A worker 的收尾快照"对上不了
+      # "B worker 造的脏数据"。这不是并发竞态，是分发策略与 fixture 作用域错配。
+      # loadfile 按文件分发，一个文件整个落在同一个 worker，作用域闭合，因而干净。
+      #
+      # 而这个仓库里的并发用例（testcases/mes 的 `assert_requests_overlapped`）
+      # 在 loadfile 下**实测不失真**：它断言的是同一进程内几个线程的请求时间区间
+      # 交叠过（`testcases/mes/conftest.py:157` 的 threading.Barrier），
+      # loadfile 不拆文件，这些线程仍在同一个进程里跑。
+      # 加压验证：`-m mes -n 8 --dist loadfile` 连跑 3 次，30 passed 全绿
+      # （10.35s / 10.47s / 11.29s），说明它扛得住调度争抢。
+      # ---------------------------------------------------------------------
+
+      - name: 运行接口自动化（含覆盖率门禁）
+        # 这一组是 92 条用例，占 not-ui 全量的 100%（`-m api` 与 `-m "not ui"`
+        # 选取数完全相同，因为 mes/login 的用例同时打了 api 标记），
+        # 所以覆盖率门禁挂在这里而不是另起一步——再跑一遍纯属浪费 runner 时间。
+        # --cov= 后面跟空值是关掉自动生成的 HTML/XML 子报告，
+        # 报告格式由 --cov-report=term 单独指定，避免往工作区里写垃圾。
+        run: |
+          pytest -m api -n 4 --dist loadfile \
+            --cov=. --cov-report=term --cov-report= \
+            --cov-fail-under=40 \
+            --alluredir=allure-results
         env:
           # CI 网络比本地慢，阈值放宽，避免误报
           # （实测 GitHub runner 连 jsonplaceholder 常在 2-4 秒波动）
           MAX_RESPONSE_MS: "8000"
 
+      # 覆盖率门禁的数字来源：本机实测 `-m "not ui" --cov=.` → **43.89%**
+      # （2889 statements / 1621 miss，TOTAL 44%）。门禁取 40，留 ~4pp 余量。
+      #
+      # 为什么不取 44 或更高：那个数字里有相当一部分来自公网接口用例本身，
+      # 在 runner 上会抖动；门禁的意义是"拦住覆盖率**退化**"，不是"卡住当前值"。
+      # 设成贴着实测值，任何一次无害的重构都会让它变红，然后就会有人来调低它——
+      # 门禁一旦被调过一次，就不再有人相信它了。
+      #
+      # ⚠️ 已如实登记的覆盖盲区：`mock_server/*` 恒为 0%。
+      # 原因不是没测，而是**进程边界**：mock_server 由 fixture 以 subprocess 拉起
+      # （testcases/mes/mock_server_ctl.py），而 coverage 只统计它所在进程的代码执行，
+      # 子进程里的执行不会被父进程的 coverage 采集到。涉及的模块与语句数：
+      # app.py 40 / db.py 113 / routers.py 198 / services.py 359 / schemas.py 186 /
+      # errors.py 97 / quantity.py 73 / idempotency.py 70 / deps.py 63 / security.py 61 /
+      # models.py 27 / util.py 22 / run.py 37 / __init__.py 12（共 1358 条 statements）。
+      # 这 1358 条是**被测得最狠**的代码（30 条 MES 用例全打在它上面），
+      # 却贡献了 0% —— 也就是说 43.89% 这个数字**低估**了真实覆盖，
+      # 且真实覆盖率的分母被这个大盲区稀释了。要让它们进覆盖率统计，
+      # 需要给 subprocess 里的 python 加 `-m coverage run --parallel-mode`
+      # 并在用例结束后 `coverage combine`（本机未做，留作后续改进）。
+
       # UI 用例打的是公共 demo 站，外部因素多，失败不阻断流水线。
       # 但这不等于可以放着不管：报告和截图照样产出，需要人去看。
+      # UI 不并行：只有 2 个测试文件，`-n 4` 实际只会用上 2 个 worker，
+      # 而启动 2 个 worker 进程 + 每个 worker 各自拉起一次 Chromium 的开销，
+      # 大于它省下的用例时间；且浏览器并发会显著抬升公共 demo 站的失败率。
       - name: 运行 UI 自动化（失败不阻断流水线）
         run: pytest -m ui --alluredir=allure-results
         continue-on-error: true
@@ -86,6 +215,19 @@ jobs:
       # 不依赖外部网络，所以它反而是 CI 上最稳的一组。
       # 注意这一步**不设** continue-on-error：它测的是我们自己造的服务的状态机、
       # 乐观锁和金额精度，红了就是真坏了，必须拦住流水线。
+      #
+      # 这一组**刻意不开 -n**，尽管 `-m api` 那一步开过了。理由有三条，都有实测：
+      # 1. 它并行反而更慢：本机 `-m mes -n 4 --dist loadfile` 12.24/12.51/12.55/14.22s，
+      #    串行 8.67/9.21/9.37/9.44s。只有 2 个测试文件，2 个 worker 拿不到什么活，
+      #    却要付两次"造一个独立 SQLite + 起一个 mock_server 子进程"的启动成本。
+      # 2. 这组用例里有**真实线程交叠**的竞态断言（`assert_requests_overlapped`，
+      #    见 testcases/mes/concurrency.py），它靠 threading.Barrier 让请求同时在途。
+      #    把机器塞满并行 worker 会拉长每个请求的墙钟，让交叠判据的边界变窄——
+      #    实测在 loadfile 下仍绿（这正是 api 那一步敢开 -n 的依据），
+      #    但在它自己该守的那一步上，没有任何理由去引入这份不确定性。
+      # 3. 这条命令在 CI 上本来就快（本机 9.4s），并行省下的几秒
+      #    换不来"并发判据的可信度"。
+      # 一句话：**能不省的地方就不省**——性能门禁和并发断言的价值全在于它说了实话。
       - name: 运行业务全链路自动化（本地 Mock 后端）
         run: pytest -m mes --alluredir=allure-results
 
@@ -94,6 +236,7 @@ jobs:
       # 所以它绿不代表"服务没问题"，而是代表"服务的行为没有变化"。
       # 一旦有人改了 login_app 却没同步用例、或者修好了缺陷，这一步会红——
       # 红的时候先看 docs/login-contract.md 的"契约 vs 实现"差异表，再决定是改用例还是改实现。
+      # 不开 -n：只有 1 个测试文件，loadfile 模式下 n>1 完全用不上。
       - name: 运行登录契约自动化（本地被测服务）
         run: pytest -m login --alluredir=allure-results
 
@@ -147,9 +290,9 @@ jobs:
             echo ""
             echo "| 项目 | 结果 |"
             echo "|---|---|"
-            echo "| 接口用例 | \`pytest -m api\` |"
+            echo "| 接口用例 | \`pytest -m api\`（-n 4 --dist loadfile，含覆盖率门禁 40%） |"
             echo "| UI 用例 | \`pytest -m ui\`（失败不阻断） |"
-            echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端） |"
+            echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端，刻意串行） |"
             echo "| 登录契约 | \`pytest -m login\`（本地被测服务，钉住当前行为含 6 个已知缺陷） |"
             echo "| 数据隔离 | \`data_isolation_check\`：会话结束时各表行数与库存合计必须回到基线 |"
             echo "| 报告 | 见下方 Artifacts 里的 \`allure-report\` |"
@@ -159,3 +302,219 @@ jobs:
               echo "本次共产生 $(ls allure-results | grep -c 'result.json' || true) 条用例结果。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # 覆盖率数字单独写进摘要：门禁只给"过/不过"，
+      # 而人想知道的是"比上次涨了还是跌了"。
+      - name: 把覆盖率写进流水线摘要
+        if: always()
+        run: |
+          if [ -f .coverage ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 覆盖率" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            python -m coverage report --skip-covered --skip-empty >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> 门禁值 40%（实测 43.89%）。\`mock_server/*\` 恒为 0%：它由 fixture" >> "$GITHUB_STEP_SUMMARY"
+            echo "> 以 subprocess 拉起，coverage 采集不到子进程内的执行——详见 workflow 内注释。" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ---------------------------------------------------------------------
+      # 失败通知：**不需要任何 secret**
+      # ---------------------------------------------------------------------
+      # 方案一（默认，永远可用）：失败时把诊断信息写进 step summary。
+      # 它不依赖任何凭据，也不会因为权限问题把流水线本身弄红。
+      - name: 失败时写诊断摘要（无需 secret）
+        if: failure()
+        run: |
+          {
+            echo ""
+            echo "---"
+            echo "## ❌ 本次流水线失败"
+            echo ""
+            echo "| 字段 | 值 |"
+            echo "|---|---|"
+            echo "| 触发方式 | \`${{ github.event_name }}\` |"
+            echo "| 分支 / 引用 | \`${{ github.ref }}\` |"
+            echo "| 提交 | \`${{ github.sha }}\` |"
+            echo "| 执行者 | \`${{ github.actor }}\` |"
+            echo "| 运行链接 | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
+            echo ""
+            echo "排查顺序：先看本页上方哪个 step 变红，再看 Artifacts 里的 \`allure-report\`；"
+            echo "UI 用例的失败截图在 \`ui-screenshots\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 方案二：自动开 issue 跟踪。用内置的 GITHUB_TOKEN，不需要配 secret。
+      # 只在 push 到 main 与定时回归时开——PR 来自 fork 时 token 是只读的，
+      # 开 issue 必然 403，那种失败会盖住真正的测试失败。
+      # 同一时间只保留一个未关闭的告警 issue（靠固定 label 去重），
+      # 否则定时回归一旦连续几周红，issue 列表会被刷屏，然后没人再看。
+      - name: 失败时自动开 issue（复用内置 GITHUB_TOKEN）
+        if: failure() && (github.event_name == 'schedule' || github.event_name == 'push')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          LABEL="ci-failure"
+          TITLE="CI 失败：${{ github.ref_name }}（${{ github.event_name }}）"
+          BODY="流水线在 \`${{ github.sha }}\` 上失败。
+
+          - 触发方式：\`${{ github.event_name }}\`
+          - 分支：\`${{ github.ref_name }}\`
+          - 执行者：\`${{ github.actor }}\`
+          - 运行链接：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          排查顺序：先看该 run 里哪个 step 变红，再看 Artifacts 的 \`allure-report\`。"
+          gh label create "$LABEL" --color B60205 --description "CI 失败自动告警" 2>/dev/null || true
+          EXISTING=$(gh issue list --label "$LABEL" --state open --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY" --label "$LABEL"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # 依赖安全扫描
+  # ---------------------------------------------------------------------------
+  # 为什么单独一个 job 而不是塞进 test：
+  # 它需要联网查漏洞库，与"用例有没有通过"是两件不相干的事。
+  # 混在一起会让"某个依赖刚披露了一个 CVE"表现为"测试失败"，误导排查方向。
+  #
+  # 为什么 continue-on-error（非阻塞）：
+  # pip-audit 查的是**公共漏洞库的当前状态**，而不是这份代码的质量。
+  # 今天全绿、明天可能因为某个传递依赖被披露了 CVE 而变红——
+  # 那与本次提交毫无关系。把它设成阻塞，等于让"上游披露漏洞"变成
+  # "任何人的 PR 都过不去"，最后一定是有人把它删掉。
+  # 正确做法是让它红并**通知到人**，由人决定升级还是接受风险。
+  #
+  # 本机无法验证这一步：pip-audit 与 pre-commit 都需要创建虚拟环境，
+  # 而本机沙箱拒绝 ensurepip（PermissionError: [WinError 5]）。
+  # 故本步骤**仅 CI 可验证**，本地从未执行过。
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装 pip-audit
+        run: python -m pip install pip-audit
+
+      # --strict：把"查不到但可能有问题"的情况也当成失败，避免静默跳过。
+      # 扫 requirements.lock 而不是 requirements.txt：锁文件里是**实际会被安装的
+      # 完整传递依赖树**（123 行），而 requirements.txt 只有 13 个直接依赖。
+      # 绝大多数 CVE 出现在传递依赖上（urllib3 / certifi / anyio 之类），
+      # 只扫直接依赖等于漏掉大半攻击面。
+      - name: pip-audit（扫描锁定的依赖树）
+        continue-on-error: true
+        run: |
+          if [ -f requirements.lock ]; then
+            pip-audit --requirement requirements.lock --strict --desc on
+          else
+            pip-audit --requirement requirements.txt --strict --desc on
+          fi
+
+      - name: 把审计结果写进摘要
+        if: always()
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 依赖安全扫描（pip-audit）" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "本步骤**非阻塞**：漏洞库每天都在变，它的红不代表本次提交有问题。" >> "$GITHUB_STEP_SUMMARY"
+          echo "扫描对象是 \`requirements.lock\`（含传递依赖），不是 \`requirements.txt\`。" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # pre-commit：验证 .pre-commit-config.yaml 本身是可用的
+  # ---------------------------------------------------------------------------
+  # 为什么要在 CI 里再跑一遍 pre-commit：hook 配置是**会腐烂的代码**。
+  # rev 指向的 tag 可能被删、hook id 可能被改、local hook 引用的脚本可能被改名。
+  # 开发者的机器上装着 hook 也发现不了这些——因为 pre-commit 只在提交时
+  # 才去拉那些 repo，而"提交时才发现 hook 拉不下来"的体验是：
+  # 有人用 `--no-verify` 绕过，然后所有人都开始绕过。
+  # 在 CI 上跑一次，把这类腐烂变成可见的红色。
+  #
+  # 本机无法验证：pre-commit 安装需要 ensurepip，沙箱拒绝（实测挂起 300s 无返回）。
+  pre-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装 pre-commit
+        run: python -m pip install pre-commit
+
+      # 缓存 pre-commit 拉下来的 hook 环境。命中后这一步从 ~40 秒降到几秒。
+      - name: 缓存 pre-commit 环境
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      # --all-files 检查整个仓库（不是只查 diff）：
+      # hook 是"新代码符合规范"，但仓库里可能本来就有不合规的旧文件；
+      # 只查 diff 的话那些文件永远不会被修，规范就只约束了新代码。
+      # commit-msg 阶段的 hook 在 --all-files 下会被自动跳过（没有提交信息可查），
+      # 这是符合预期的，它由本地的 commit-msg hook 负责。
+      - name: pre-commit run --all-files
+        run: pre-commit run --all-files --show-diff-on-failure
+
+  # ---------------------------------------------------------------------------
+  # 提交信息规范：仓库的历史提交本身就要过关
+  # ---------------------------------------------------------------------------
+  # 为什么单独验证：.pre-commit-config.yaml 里的 commit-msg hook 只在**本地提交那一刻**
+  # 触发，CI 上没有任何东西会执行 scripts/check_commit_msg.py。
+  # 也就是说，如果这个脚本本身写错了（正则写错、把合法提交判红），
+  # 它会变成一个"拦住所有人提交、但 CI 一片绿"的隐形故障。
+  # 这里拿仓库最近 30 条真实提交跑一遍，等于给这个脚本做回归测试。
+  commit-convention:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          # 需要历史提交才能校验，默认的浅克隆（depth 1）拿不到。
+          fetch-depth: 30
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 注意：已有的历史提交里可能有不带 scope 或 type 不在白名单的，
+      # 脚本会判红——那正是它该做的事。但为了不让"历史遗留"永久堵住流水线，
+      # 这里逐条报告、不聚合失败：给出统计，由人决定要不要回头修历史。
+      # 真正的强制点仍然在本地 hook（那是提交发生的地方）。
+      - name: 校验最近 30 条提交信息
+        run: |
+          set -uo pipefail
+          ok=0
+          bad=0
+          while IFS= read -r sha; do
+            msg=$(git log -1 --pretty=%B "$sha")
+            if printf '%s' "$msg" | python scripts/check_commit_msg.py - >/dev/null 2>&1; then
+              ok=$((ok + 1))
+            else
+              bad=$((bad + 1))
+              echo "::warning title=提交信息不合规::${sha:0:8} $(git log -1 --pretty=%s "$sha")"
+            fi
+          done < <(git log -n 30 --pretty=%H)
+          echo "合规 $ok 条 / 不合规 $bad 条" >> "$GITHUB_STEP_SUMMARY"
+          echo "合规 $ok 条 / 不合规 $bad 条"

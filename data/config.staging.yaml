@@ -1,0 +1,27 @@
+# staging 档案：由 TEST_ENV=staging 选中（见 common/config.py）。
+#
+# 这里的地址是**占位符**，不是可以跑通的环境。接入公司环境时按下面的口径替换：
+#   base.api / base.ui  换成 staging 环境的真实入口
+#   data.expected_user_count 换成 staging 库里的真实期望条数
+# 占位符故意写成不可解析的域名（.invalid 是 RFC 2606 保留后缀，永远解析不出来），
+# 而不是随便找个真实站点顶替：地址填错时应当**连不上并报错**，
+# 而不是安静地打到别人的公网服务上、把别人的数据当成自己的 staging 断言对象。
+
+base:
+  api: "https://api.staging.invalid"
+  ui: "https://web.staging.invalid"
+
+user:
+  valid:
+    username: "standard_user"
+    password: "secret_sauce"
+  locked:
+    username: "locked_out_user"
+    password: "secret_sauce"
+  invalid:
+    username: "wrong_user"
+    password: "wrong_password"
+
+data:
+  # staging 是共享环境，数据量通常比本地 dev 大得多，这个期望值一定要按环境实测后改。
+  expected_user_count: 10
