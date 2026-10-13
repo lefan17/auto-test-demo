@@ -1,9 +1,9 @@
 # === 核心测试框架 ===
-pytest==8.3.3
-pytest-html==4.1.1
+pytest==9.1.1
+pytest-html==4.2.0
 allure-pytest==2.13.5
-pytest-xdist==3.6.1
-pytest-cov==6.0.0
+pytest-xdist==3.8.0
+pytest-cov==7.1.0
 
 # === 接口测试 ===
 requests==2.32.3
@@ -12,7 +12,7 @@ jsonschema==4.23.0
 
 # === UI 测试 ===
 playwright==1.48.0
-pytest-playwright==0.5.2
+pytest-playwright==0.10.0
 
 # === Mock 后端（testcases/mes/ 的业务全链路用例需要，见 mock_server/） ===
 # 放在同一个文件里，是为了让"一条 pip install 就能跑全部用例"成立。
