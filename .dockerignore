@@ -1,0 +1,79 @@
+# =============================================================================
+# Docker 构建上下文排除清单
+# =============================================================================
+#
+# 为什么需要它：`docker build` 把 context 目录**整个**打包发给 daemon，
+# 这一步与 Dockerfile 里写了几条 COPY 无关——即使全是精确 COPY，没被排除的
+# 文件照样要被读取、打包、传输。本仓库实测 361.6 MB，其中 .venv/ 197.5 MB、
+# .tmp/ 146.1 MB、.mypy_cache/ 10.4 MB、.piptools-cache/ 5.0 MB，.git/ 也在
+# 目录里。不排除就等于每次构建都白传几百 MB。
+#
+# 与 Dockerfile 精确 COPY 的关系：两者解决的不是同一件事。
+# 本文件管"传给 daemon 的字节数"，精确 COPY 管"哪些文件进镜像层"。
+# 精确 COPY 的价值（新增顶层目录不会自动进镜像）不因本文件而消失，所以保留。
+#
+# ⚠️ 未验证声明：本机 Docker daemon 起不来（WSL E_ACCESSDENIED），
+#    本文件**没有**在真实 `docker build` 上观测过。已做的替代校验：
+#    逐条对照 Dockerfile 的 COPY 源 + 用 gitignore 语义库对全仓文件跑匹配回归
+#    + `docker compose config --quiet` 静态校验。真实构建由 CI 承担。
+#
+# 写法说明：
+#   1. Docker 不支持行内注释（`path  # 说明` 会把注释当成路径的一部分），
+#      所以每条排除项单独占一行，说明写在它上方。
+#   2. Docker 的匹配是整路径匹配，`*.pyc` 只命中根目录的同名文件；
+#      要命中任意层级必须写 `**/*.pyc`。下面统一用 `**/` 前缀。
+#   3. 这里**不排除** Dockerfile 的 COPY 源路径（apis/ common/ data/ login_app/
+#      mock_server/ testcases/ tools/ ui/ requirements.txt conftest.py pytest.ini
+#      ruff.toml）本身。唯一会命中它们内部的是 `__pycache__/` 与 `*.py[cod]`：
+#      那是本机字节码缓存而非运行依据（镜像里还设了 PYTHONDONTWRITEBYTECODE=1），
+#      且 Docker 对 COPY 一个目录只要求源目录存在，子目录被 ignore 不影响复制。
+#   4. 同理**不排除** testcases/ui/artifacts/*.png 与 mock_server/*.db*：
+#      它们确实落在 COPY 源里。排除它们不会让 COPY 失败，但那属于"改镜像内容"，
+#      该在 Dockerfile 里决定，不该由一份上下文裁剪文件顺手改掉。
+# =============================================================================
+
+# ---------- 版本控制：构建上下文不需要完整历史 ----------
+.git/
+.gitignore
+.gitattributes
+
+# ---------- 虚拟环境：依赖由 Dockerfile 的 pip install 提供，不靠复制 ----------
+.venv/
+venv/
+
+# ---------- Python 字节码与构建缓存 ----------
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+build/
+dist/
+
+# ---------- 测试与静态检查工具的缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.piptools-cache/
+pytest-of-*/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# ---------- 运行产物 ----------
+reports/
+allure-results/
+allure-report/
+test-results/
+.tmp/
+**/*.log
+
+# ---------- pip 的临时目录 ----------
+# 本机为绕开沙箱把 TEMP 指到了仓库根，pip 于是把 pip-unpack-* /
+# pip-install-* / pip-ephem-wheel-cache-* / pip-build-tracker-* 建在这里。
+# 它们只属于本机这一次安装，不该进上下文。
+pip-*/
+
+# ---------- IDE / 编辑器 ----------
+.vscode/
+.idea/
+**/*.swp

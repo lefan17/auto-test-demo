@@ -67,6 +67,31 @@
   `common/yaml_util.get_config()` 直接读 `config.yaml` 完全一致（已用 JSON 对比验证）。
 - **文档**：新增本文件与 `CONTRIBUTING.md`；`README.md` 补上上述能力与**实测**数字。
 
+### 修复 —— 补齐容器化与 CI 的两处不一致
+
+这一批只做两件事，都是把上面那批工程化外壳里**漏掉的一致性**补齐：
+同批次的其他仓库都有的东西，这里缺了两样。
+
+- **容器化**：新增 `.dockerignore`。之前 Dockerfile 靠精确 `COPY` 顶住了镜像内容，
+  但 `docker build` 打包 context 时与 COPY 写什么**无关**——实测仓库 361.6 MB
+  （`.venv/` 197.5 MB、`.tmp/` 146.1 MB、`.mypy_cache/` 10.4 MB、
+  `.piptools-cache/` 5.0 MB，`.git/` 也在），这一份每次构建都要整体传给 daemon。
+  两者职责不同，所以精确 COPY **保留不动**（它是白名单，管镜像内容；
+  `.dockerignore` 是黑名单，管上下文体积），只把 Dockerfile 里那句
+  「本仓库没有 .dockerignore」的注释改成与新事实一致，技术理由原样保留。
+  ⚠️ **未验证**：本机 Docker daemon 起不来（WSL `E_ACCESSDENIED`），
+  这份文件**没有**在真实 `docker build` 上观测过。已做的替代校验：
+  逐条对照 Dockerfile 的全部 COPY 源（135 个文件），确认无一条源码/配置/数据文件被排除
+  （被命中的 65 个**全部**是 `__pycache__/*.pyc` 本机字节码缓存）；
+  用 gitignore 语义库对全仓文件跑匹配回归；`docker compose config --quiet` → 退出码 0。
+- **CI 钉版本**：`security` job 的 `pip install pip-audit` 与 `pre-commit` job 的
+  `pip install pre-commit` 改为 `pip-audit==2.10.1` / `pre-commit==4.3.0`。
+  同一文件里 ruff（`0.16.10`）和 mypy（`2.4.0`）都钉了版本，只有这两条漏了；
+  未钉版本意味着上游某天发新版就可能让 job 因为"工具自身行为变了"而变色。
+  两个版本号均由 PyPI JSON API 查证存在，并**实际下载 wheel 校验 sha256 后离线安装成功**。
+  pre-commit 刻意不取当时的 latest（4.7.0）：这个 job 是验证配置有没有腐烂，
+  钉在已知可用版本上，红色才只反映配置本身。
+
 ---
 
 ## 2026-10-13

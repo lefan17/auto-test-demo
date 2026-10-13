@@ -405,8 +405,12 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # 版本写死，与 lint job 的 ruff 同理：不装 latest。
+      # 未钉版本时，某天上游发新版就可能让这个 job 因为"工具本身的行为变了"而变色，
+      # 而那一变化与本次提交毫无关系。
+      # 2.10.1 是当前的 latest（PyPI JSON API 实测），也是 agent-test-hub 钉的同一版本。
       - name: 安装 pip-audit
-        run: python -m pip install pip-audit
+        run: python -m pip install "pip-audit==2.10.1"
 
       # --strict：把"查不到但可能有问题"的情况也当成失败，避免静默跳过。
       # 扫 requirements.lock 而不是 requirements.txt：锁文件里是**实际会被安装的
@@ -456,8 +460,12 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # 版本写死，理由同上（ruff / pip-audit 两处一致）。
+      # 4.3.0 经 PyPI JSON API 实测存在且可安装；刻意**不**取当时的 latest 4.7.0：
+      # 这个 job 是"验证 .pre-commit-config.yaml 没腐烂"，不是"追最新工具"，
+      # 固定在一个已知可用的版本上，才能让红色只反映配置腐烂而不反映上游发版。
       - name: 安装 pre-commit
-        run: python -m pip install pre-commit
+        run: python -m pip install "pre-commit==4.3.0"
 
       # 缓存 pre-commit 拉下来的 hook 环境。命中后这一步从 ~40 秒降到几秒。
       - name: 缓存 pre-commit 环境
