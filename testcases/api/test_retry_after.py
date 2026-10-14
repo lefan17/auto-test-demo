@@ -43,7 +43,17 @@ def scripted_server(script):
     lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
+        # 用 HTTP/1.1 + 显式 Content-Length，让连接可以复用；配合下面「把请求体读干净」，
+        # 避免服务端在还有未读数据时就关闭 socket——Windows 对这种情况发 RST，
+        # 客户端下一次复用连接会看到 ConnectionAbortedError(10053)，
+        # 于是用例会偶发地多出一次"传输失败重试"，断言命中次数就随机变红。
+        protocol_version = "HTTP/1.1"
+
         def _handle(self):
+            # 必须把请求体读干净，哪怕业务上不看它。
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
             with lock:
                 index = state["hits"]
                 state["hits"] += 1
