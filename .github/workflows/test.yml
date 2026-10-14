@@ -71,7 +71,7 @@ jobs:
 
   # 静态类型检查：单独一个 job，与 lint 分开。
   # 理由与 lint 独立于 test 一样——mypy 比 ruff 慢（要读全仓 + 建缓存），
-  # 但远快于装 Playwright 和跑 92 条用例。把它挂在 test job 里，
+  # 但远快于装 Playwright 和跑下面这些用例。把它挂在 test job 里，
   # 一个类型标注错误要等两分钟才知道。
   typecheck:
     runs-on: ubuntu-latest
@@ -92,7 +92,7 @@ jobs:
       # py.typed 标记），但那不代表依赖装不装无所谓——mypy 对"已安装但无类型标注"
       # 和"根本没安装"的处理路径不同，只装 mypy 得到的结论与本地不一致，
       # 会变成"本地绿、CI 红"的经典事故。
-      # 本地实测：装齐依赖后 `python -m mypy` → 0 errors（54 source files）。
+      # 本地实测：装齐依赖后 `python -m mypy` → 0 errors（65 source files）。
       - name: 安装依赖（与 test job 同一份约束）
         run: |
           python -m pip install --upgrade pip
@@ -111,6 +111,27 @@ jobs:
     # 又不会让一个真卡死的 job 占满默认的 360 分钟额度。
     timeout-minutes: 45
 
+    # 角色口令与 UI 口令从 GitHub Secrets 注入。用例侧（apis/mes_api.py、
+    # data/config.yaml 的 ${UI_PASSWORD}）与 Mock 后端的**种子口令**取的都是
+    # common/secrets.py 这一个来源，所以只要在这里注入，两边同时生效——
+    # 不会出现"种子入库 A、用例拿 B 登录"的诡异 401。
+    #
+    # 没配 secret 时 GitHub 求值成空串，而 common/secrets.py 的取值判据是
+    # `if value:`，空串会回落到「本地 Mock 默认口令」——即**行为与不注入时完全一致**。
+    # 这正是想要的降级：fork 的 PR 拿不到 secret，流水线照样跑得通。
+    #
+    # 刻意**不**注入 MOCK_TOKEN_TTL / TOKEN_REFRESH_MARGIN_SECONDS / MOCK_SECRET：
+    # 令牌生命周期用例自己按实例传这几个值（testcases/mes/test_token_lifecycle.py），
+    # 全局设置会让"令牌已过期"这类用例的前提失真（它们需要精确控制 TTL）。
+    env:
+      MES_PASSWORD_ADMIN: ${{ secrets.MES_PASSWORD_ADMIN }}
+      MES_PASSWORD_PLANNER: ${{ secrets.MES_PASSWORD_PLANNER }}
+      MES_PASSWORD_OPERATOR: ${{ secrets.MES_PASSWORD_OPERATOR }}
+      MES_PASSWORD_OPERATOR2: ${{ secrets.MES_PASSWORD_OPERATOR2 }}
+      MES_PASSWORD_QA: ${{ secrets.MES_PASSWORD_QA }}
+      UI_PASSWORD: ${{ secrets.UI_PASSWORD }}
+      UI_WRONG_PASSWORD: ${{ secrets.UI_WRONG_PASSWORD }}
+
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -128,6 +149,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # 关掉 autocrlf：下面 `scripts/export_openapi.py --check` 比对的是**文件字节**，
+      # 而导出侧恒写 LF（见 .gitattributes 的 `*.json text eol=lf`）。
+      # runner 上若 core.autocrlf=true，checkout 会把 docs/openapi.json 转成 CRLF，
+      # 于是 check 会把"行尾差异"误报成"契约漂移"，而真相是根本没漂移。
+      - name: 固定行尾（契约漂移检测依赖字节一致）
+        run: git config core.autocrlf false
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
@@ -139,36 +167,79 @@ jobs:
       # ---------------------------------------------------------------------
       # 关于 -n（pytest-xdist）的取舍——这是本文件里唯一一处"看起来不专业"的选择
       # ---------------------------------------------------------------------
-      # 本机实测（Windows，92 条 not ui）：
-      #   串行 26.42s / 27.41s / 28.30s   ← 三次
-      #   -n 4 --dist loadfile  12.03s / 12.25s / 12.59s
-      # 所以这一组**开** -n 4 --dist loadfile，约 2.2x 加速。
+      # 本机实测（Windows，`-m "not ui"` 选中 329 passed + 11 xfailed）：
+      #   串行 61.68s / 62.18s / 56.21s   ← 三次
+      #   -n 4 --dist loadfile  20.93s / 20.52s / 20.78s
+      # 所以这一组**开** -n 4 --dist loadfile，约 2.9x 加速。
       #
-      # 为什么必须是 loadfile 而不是默认的 load：
-      # 实测 `-m mes -n 4 --dist load` → **30 passed, 1 error, EXIT=1**
-      # （两次复现：6.46s / 6.09s）。报错是 teardown 阶段
-      # `testcases/mes/conftest.py:129` 的会话级数据隔离断言：
+      # 为什么选 loadfile 而不是默认的 load：
+      # 改造前实测 `-m mes -n 4 --dist load` → **30 passed, 1 error, EXIT=1**，
+      # 报错是 teardown 阶段 `testcases/mes/conftest.py` 的会话级数据隔离断言：
       #   AssertionError: 会话结束时数据没有回到基线
       #   available_milli 3270.000 -> 3268.000（-2.000）
       #   issued_milli       0.000 ->    2.000（+2.000）
-      # 原因：MES 的数据隔离基线（`baseline_counts`，session 作用域）与
-      # 会话结束时的回收断言是**按 worker 各算一份**的，默认的 load 模式
-      # 会把同一文件的用例拆到不同 worker，于是"A worker 的收尾快照"对上不了
-      # "B worker 造的脏数据"。这不是并发竞态，是分发策略与 fixture 作用域错配。
+      # 原因是 MES 的数据隔离基线（session 作用域）与收尾断言**按 worker 各算一份**，
+      # 默认的 load 会把同一文件的用例拆到不同 worker，于是"A worker 的收尾快照"
+      # 对上不了"B worker 造的脏数据"。这不是并发竞态，是分发策略与 fixture 作用域错配。
       # loadfile 按文件分发，一个文件整个落在同一个 worker，作用域闭合，因而干净。
+      #
+      # ⚠️ 如实登记：那个 1 error 在当前用例集下**复现不出来了**
+      # （`-m mes -n 4 --dist load` 四次实测 54 passed / EXIT=0，13.34~16.57s；
+      #  `testcases/mes/` 的数据隔离与并发相关文件相对改造前一个字节没改）。
+      # 复现不出来不等于修好了，所以这一组仍然只开 loadfile，不改成 load。
       #
       # 而这个仓库里的并发用例（testcases/mes 的 `assert_requests_overlapped`）
       # 在 loadfile 下**实测不失真**：它断言的是同一进程内几个线程的请求时间区间
-      # 交叠过（`testcases/mes/conftest.py:157` 的 threading.Barrier），
+      # 交叠过（`testcases/mes/conftest.py` 的 threading.Barrier），
       # loadfile 不拆文件，这些线程仍在同一个进程里跑。
-      # 加压验证：`-m mes -n 8 --dist loadfile` 连跑 3 次，30 passed 全绿
-      # （10.35s / 10.47s / 11.29s），说明它扛得住调度争抢。
+      # 加压验证：`-m mes -n 8 --dist loadfile` 连跑 3 次，54 passed 全绿
+      # （17.88 / 17.98 / 18.03s），说明它扛得住调度争抢。
+      #
+      # ⚠️ 另一件必须登记的事：`-m api` 那一组里有 33 条打**公网**
+      # （jsonplaceholder.typicode.com），会随机红——实测 4 轮里 3 轮撞上，
+      # 单轮 1~5 条失败，失败原文是 `Response [502]` + Cloudflare 的
+      # `typicode.com | 502: Bad gateway` 页面，偶发 429。
+      # 也就是说：这一步的红**不能直接当作代码坏了**。
+      # 处置放在波 2 的 flaky 治理（重试策略 / 隔离公网组），本轮不掩盖它。
       # ---------------------------------------------------------------------
 
+      # ---------------------------------------------------------------------
+      # 契约驱动测试（波 1 新增）
+      # ---------------------------------------------------------------------
+      # 两步是**互不替代**的两件事，所以分成两步：
+      #
+      # 第一步是**漂移门禁**：`docs/openapi.json` 是 `mock_server` 那 29 个 operation
+      # 的自动导出产物（`python scripts/export_openapi.py` 写、`--check` 只比对）。
+      # 它绿的唯一含义是"入库的契约与代码同源"。没有这一步，spec 会慢慢腐烂成
+      # 一份看起来权威、实际描述着半年前服务的文档——而基于它生成的一切用例
+      # 都在测一个不存在的系统。这一步不需要起服务，所以排在前面（秒级）。
+      #
+      # 第二步是**属性驱动契约测试**：schemathesis 按 spec 生成请求，
+      # 断言"响应符合 spec 声明"。它比手写用例更容易撞出边界——
+      # 本仓库的 DEF-05（非有限十进制字面量让服务回 500）就是它扫出来的，
+      # 那句 `{"qty": "INFINITY"}` 手写用例基本不可能想到。
+      #
+      # 为什么钉住样例数（CONTRACT_MAX_EXAMPLES=8）：schemathesis 的默认规模
+      # 是按时间预算自适应的，CI 上机器快慢不同会得到不同的样例集，
+      # 于是"这次绿、下次红"的抖动会变成常态。钉成固定值后，同一份代码
+      # 每次生成的样例集相同，门禁才是可复现的。想跑大样本用 `CONTRACT_FULL=1`
+      # （本地实测约 45 秒，是默认值的 4 倍）。
+      #
+      # ⚠️ 这一步**依赖 requirements.txt 里的 schemathesis**，它同时是
+      # 本仓库第一条"第三方契约工具"依赖；升级 schemathesis 前先看
+      # requirements.txt 里那段关于 OpenAPI 3.1 实验开关的注释。
+      - name: 契约漂移检测（入库 spec 必须与代码同源）
+        run: python scripts/export_openapi.py --check
+
+      - name: 契约属性测试（schemathesis 按 spec 生成请求）
+        run: python -m pytest -m contract -q --alluredir=allure-results
+        env:
+          CONTRACT_MAX_EXAMPLES: "8"
+
       - name: 运行接口自动化（含覆盖率门禁）
-        # 这一组是 92 条用例，占 not-ui 全量的 100%（`-m api` 与 `-m "not ui"`
-        # 选取数完全相同，因为 mes/login 的用例同时打了 api 标记），
-        # 所以覆盖率门禁挂在这里而不是另起一步——再跑一遍纯属浪费 runner 时间。
+        # 这一组是 116 条用例（33 接口 + 54 MES + 29 登录，后两组的用例同时打了
+        # api 标记）。契约那 224 条**不在这里**：它们要单独起本地服务、单独钉样例数，
+        # 已经在上面那一步跑过了。
         # --cov= 后面跟空值是关掉自动生成的 HTML/XML 子报告，
         # 报告格式由 --cov-report=term 单独指定，避免往工作区里写垃圾。
         run: |
@@ -181,26 +252,43 @@ jobs:
           # （实测 GitHub runner 连 jsonplaceholder 常在 2-4 秒波动）
           MAX_RESPONSE_MS: "8000"
 
-      # 覆盖率门禁的数字来源：本机实测 `-m "not ui" --cov=.` → **43.89%**
-      # （2889 statements / 1621 miss，TOTAL 44%）。门禁取 40，留 ~4pp 余量。
+      # 覆盖率门禁的数字来源：本机实测这一条命令 → **52.23%**
+      # （3883 statements / 1855 miss，TOTAL 52%）。门禁取 40，留 ~12pp 余量。
       #
-      # 为什么不取 44 或更高：那个数字里有相当一部分来自公网接口用例本身，
+      # 为什么不贴着实测值设：这个数字里有相当一部分来自公网接口用例本身，
       # 在 runner 上会抖动；门禁的意义是"拦住覆盖率**退化**"，不是"卡住当前值"。
       # 设成贴着实测值，任何一次无害的重构都会让它变红，然后就会有人来调低它——
       # 门禁一旦被调过一次，就不再有人相信它了。
       #
-      # ⚠️ 已如实登记的覆盖盲区：`mock_server/*` 恒为 0%。
-      # 原因不是没测，而是**进程边界**：mock_server 由 fixture 以 subprocess 拉起
-      # （testcases/mes/mock_server_ctl.py），而 coverage 只统计它所在进程的代码执行，
-      # 子进程里的执行不会被父进程的 coverage 采集到。涉及的模块与语句数：
-      # app.py 40 / db.py 113 / routers.py 198 / services.py 359 / schemas.py 186 /
-      # errors.py 97 / quantity.py 73 / idempotency.py 70 / deps.py 63 / security.py 61 /
-      # models.py 27 / util.py 22 / run.py 37 / __init__.py 12（共 1358 条 statements）。
-      # 这 1358 条是**被测得最狠**的代码（30 条 MES 用例全打在它上面），
-      # 却贡献了 0% —— 也就是说 43.89% 这个数字**低估**了真实覆盖，
-      # 且真实覆盖率的分母被这个大盲区稀释了。要让它们进覆盖率统计，
-      # 需要给 subprocess 里的 python 加 `-m coverage run --parallel-mode`
-      # 并在用例结束后 `coverage combine`（本机未做，留作后续改进）。
+      # 注意：同一份代码全量跑（`-m "not ui" --cov=.`）是 **74.30%**
+      # （3953/1016），比这一组的 52.23% 高出一大截。差额来自契约那 224 条用例，
+      # 它们在**上面那一步**就跑完了。门禁挂在这一组而不是全量上，是因为
+      # 全量要再跑一次契约（约 21 秒）才凑得出同一份覆盖数据，
+      # 而门禁要拦的是"这一组用例还测不测得住"。
+      #
+      # ⚠️ 关于 `mock_server/*` 的覆盖率，这里必须说准确——旧注释写的
+      # "恒为 0%、1358 条 statements、43.89% 低估了真实覆盖"已被实测推翻：
+      #
+      #   1. 它**不再恒为 0%**：实测 app.py 68% / deps.py 58% / models.py 48% /
+      #      util.py 68% / errors.py 100% / schemas.py 100% / quantity.py 62% /
+      #      db.py 72% / routers.py 35% / services.py 14%。
+      #   2. 但这个数字**不是"跑着的 Mock 服务被 HTTP 打到"的行为覆盖**。
+      #      对照实验（删掉 .hypothesis、关掉 xdist）：只跑契约 export 那条文件
+      #      → app.py 68% / routers.py 35% / services.py 14%；只跑属性测试那条文件
+      #      → deps.py 55% / quantity.py 62% / routers.py 0%；而 `--collect-only`
+      #      （一条用例都不执行）→ mock_server 全部 **0%**（1374 statements）。
+      #      真相是：`test_contract_export.py` 用 subprocess 调
+      #      `scripts/export_openapi.py`，而 pytest-cov 会把自己的埋点环境变量
+      #      （COV_CORE_*，另有一条 COVERAGE_PROCESS_START 通路）传给子进程，
+      #      于是子进程里 `create_app()` / `app.openapi()` 触发的**模块级执行**
+      #      被记账，最后由 pytest-cov combine 回来。
+      #   3. 由 fixture 以子进程拉起的那个**真** Mock 服务，仍然一点都没被统计到
+      #      （`testcases/mes/mock_server_ctl.py` 的 Popen 不带 coverage 埋点）。
+      #      所以这一块的真实盲区**没有被消掉**，只是不再显示为字面 0%。
+      #      要让子进程也进统计，需要给它加 `-m coverage run --parallel-mode`
+      #      并在用例结束后 `coverage combine`（本机未做，留作后续改进）。
+      #   4. `services.py` 14%（359 条 statements，仓库里最大的模块）是当前最大盲区——
+      #      它的行为几乎全靠子进程 HTTP 打到，而子进程不记账。
 
       # UI 用例打的是公共 demo 站，外部因素多，失败不阻断流水线。
       # 但这不等于可以放着不管：报告和截图照样产出，需要人去看。
@@ -216,17 +304,19 @@ jobs:
       # 注意这一步**不设** continue-on-error：它测的是我们自己造的服务的状态机、
       # 乐观锁和金额精度，红了就是真坏了，必须拦住流水线。
       #
-      # 这一组**刻意不开 -n**，尽管 `-m api` 那一步开过了。理由有三条，都有实测：
-      # 1. 它并行反而更慢：本机 `-m mes -n 4 --dist loadfile` 12.24/12.51/12.55/14.22s，
-      #    串行 8.67/9.21/9.37/9.44s。只有 2 个测试文件，2 个 worker 拿不到什么活，
-      #    却要付两次"造一个独立 SQLite + 起一个 mock_server 子进程"的启动成本。
+      # 这一组**刻意不开 -n**，尽管 `-m api` 那一步开过了。理由有两条，都有实测：
+      # 1. 并行只快 1.26 倍，收益极小：本机三次实测
+      #    `-m mes -n 4 --dist loadfile` 16.54 / 16.58 / 16.57s，
+      #    串行 20.88 / 21.07 / 20.57s。只有 4 个测试文件，
+      #    而每个 worker 都要付一次"造一个独立 SQLite + 起一个 mock_server 子进程"
+      #    的启动成本，把能省的都吃掉了。
+      #    （⚠️ 旧注释写的是"并行反而更慢 12.24s vs 8.67s"——那是改造前 30 条用例时
+      #     的实测，现在用例涨到 54 条、串行涨到 20.8s，结论反过来了。数字已更正。）
       # 2. 这组用例里有**真实线程交叠**的竞态断言（`assert_requests_overlapped`，
       #    见 testcases/mes/concurrency.py），它靠 threading.Barrier 让请求同时在途。
       #    把机器塞满并行 worker 会拉长每个请求的墙钟，让交叠判据的边界变窄——
-      #    实测在 loadfile 下仍绿（这正是 api 那一步敢开 -n 的依据），
-      #    但在它自己该守的那一步上，没有任何理由去引入这份不确定性。
-      # 3. 这条命令在 CI 上本来就快（本机 9.4s），并行省下的几秒
-      #    换不来"并发判据的可信度"。
+      #    实测在 loadfile 下仍绿（`-n 8` 连跑 3 次 54 passed，17.88~18.03s），
+      #    但在它自己该守的那一步上，用 4 秒换一份不确定性，不划算。
       # 一句话：**能不省的地方就不省**——性能门禁和并发断言的价值全在于它说了实话。
       - name: 运行业务全链路自动化（本地 Mock 后端）
         run: pytest -m mes --alluredir=allure-results
@@ -291,6 +381,7 @@ jobs:
             echo "| 项目 | 结果 |"
             echo "|---|---|"
             echo "| 接口用例 | \`pytest -m api\`（-n 4 --dist loadfile，含覆盖率门禁 40%） |"
+            echo "| 契约用例 | \`pytest -m contract\`（含漂移检测 \`export_openapi.py --check\`，样例数钉死 8） |"
             echo "| UI 用例 | \`pytest -m ui\`（失败不阻断） |"
             echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端，刻意串行） |"
             echo "| 登录契约 | \`pytest -m login\`（本地被测服务，钉住当前行为含 6 个已知缺陷） |"
@@ -316,8 +407,9 @@ jobs:
             python -m coverage report --skip-covered --skip-empty >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> 门禁值 40%（实测 43.89%）。\`mock_server/*\` 恒为 0%：它由 fixture" >> "$GITHUB_STEP_SUMMARY"
-            echo "> 以 subprocess 拉起，coverage 采集不到子进程内的执行——详见 workflow 内注释。" >> "$GITHUB_STEP_SUMMARY"
+            echo "> 门禁值 40%（本组实测 52.23%；全量 \`-m \"not ui\"\` 是 74.30%）。" >> "$GITHUB_STEP_SUMMARY"
+            echo "> \`mock_server/*\` 的数字只覆盖「模块级执行」（导出脚本子进程被 pytest-cov 记账），" >> "$GITHUB_STEP_SUMMARY"
+            echo "> 由 fixture 拉起的真服务子进程仍未被统计，\`services.py\`（359 条）是当前最大盲区。" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       # ---------------------------------------------------------------------
