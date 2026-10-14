@@ -7,8 +7,9 @@ pytest-xdist==3.6.1
 pytest-cov==6.0.0
 
 # 重跑治理（flaky 用例与隔离区，见 docs/wave2-flaky-handoff.md）。
-# 只 pin 这一个直接依赖：插件自己不声明额外的运行期依赖，没有传递依赖要接手，
-# 和下面 schemathesis 段的理由一致——传递依赖由 requirements.lock 全量钉死。
+# 只 pin 这一个直接依赖：它的元数据只声明 pytest!=8.2.2,>=8.2 与 packaging>=17.1
+# 两个下界（Requires-Python >=3.10），两者本文件与 lock 里都已有更严的 pin，
+# 不需要在这里再抄一遍——传递依赖由 requirements.lock 全量钉死。
 # 为什么**不能**顺手在 pytest.ini 的 addopts 里写全局 --reruns：
 # 全局重跑会对**每一条**用例生效，真回归（断言写错、接口字段被改坏）只要第二次
 # 侥幸通过就会被吞成绿灯，门禁只剩一个装饰性的绿色。所以只有显式标了
