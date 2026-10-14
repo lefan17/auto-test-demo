@@ -88,6 +88,58 @@
      `502 Bad gateway`，单轮 1~5 条失败。这不是代码问题了，**处置留到波 2 的 flaky 治理**，
      本轮不掩盖也不修。
 
+### 新增 —— 子进程服务的覆盖率采集（波 2）
+
+被测服务由 fixture 以常驻子进程拉起，收尾走 `terminate()`；Windows 上那是
+`TerminateProcess`，不跑 `atexit`，而 coverage 的数据正是在 `atexit` 落盘——
+所以 `mock_server/*` 的覆盖率恒为 0%（Handler 路径一行都没记上）。
+
+修法不是给子进程套 `coverage run --parallel-mode`，而是给它一条**能正常返回**的退出路径：
+新增 `scripts/service_launcher.py`，在进程内装一个"吸收信号"的 handler 后再
+`runpy.run_module(<服务模块>)`。uvicorn 关闭时会 `signal.raise_signal(原信号)` 把信号
+重发给自己（默认处置终结进程、不跑 atexit），launcher 把它接住，于是 `serve()` 正常返回、
+`atexit` 执行、分片落盘；`stop()` 同时改成先礼后兵（优雅信号 → `terminate()` → `kill()`）。
+新增 `.coveragerc`（`[run] parallel = true`）承载分片模式，分片由 pytest-cov 在 session
+结束时自动 combine。
+
+实测：`-m mes --cov=mock_server` 由 9% 升到 **83%**（routers 0% → 84%、services 0% → 70%）；
+`-m login --cov=login_app` 由 31% 升到 **85%**；全量由 74.30% 升到 **89.70%**，
+CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
+
+### 新增 —— 限流退避：尊重 `Retry-After` 并加有界退避（波 2）
+
+- **`apis/base.py` 的重试等待不再写死**：改造前两处（传输失败、命中重试码）都是
+  `time.sleep(0.5 * 2**attempt)`，网关回 429 时我们照撞不误。
+  现在优先读响应头 `Retry-After`，两种格式都支持：delta-seconds（`Retry-After: 2`）
+  与 HTTP-date（`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`），
+  解析走 `email.utils.parsedate_to_datetime`（stdlib）。
+- **退避有硬上限**：新增 `API_MAX_RETRY_WAIT`（默认 30 秒）。
+  服务端若回 `Retry-After: 86400`，不会把 CI 挂在那里一整天，而是等到上限就重试或放弃。
+- **`tools/check_retry.py` 从 12 条扩到 22 条**：新增 10 条覆盖 `Retry-After` 的解析、
+  上限截断、无头回落指数退避，以及 429 + `Retry-After` 的端到端路径；原 12 条逐条不变全绿。
+- **端到端证据用真 socket**：`testcases/api/test_retry_after.py` 里 9 条起本地
+  `http.server` 返回 429 + `Retry-After`，请求真的过一遍 socket。
+  Mock 证明的是「分支选对了」，证明不了「这个头是从真实响应里读出来的」
+  （`CaseInsensitiveDict`、大小写、header 折行、HTTP 版本差异只在真过 socket 时才可能出现）。
+
+### 新增 —— flaky 治理（波 2）
+
+- `requirements.txt` 新增 `pytest-rerunfailures==16.7`。
+- `pytest.ini` 新增 `flaky` 与 `quarantine` 两个 marker；`addopts` 由 `-ra` 改为 `-raR`
+  （插件的 rerun 摘要只在 reportchars 含 r/R 时打印，否则重跑在汇总里是隐形的）。
+  **`addopts` 里不加 `--reruns`**：全局重跑会把真回归一起吞掉。
+- `testcases/api/flaky_policy.py`：`NETWORK_FLAKY` 用插件的 `only_rerun` 把重跑收窄到
+  6 条抖动指纹，`testcases/api/` 的 33 条公网用例全部挂上。CI 实测 4 轮 3 轮撞上的
+  502/429 抖动现在被重跑吸收，而契约断言红了仍当场硬失败。
+- `conftest.py`：重跑留痕 + 隔离区两个钩子。重跑才通过 / 重跑仍失败 / 被隔离三类用例
+  写进 `reports/flaky-governance.json`（junit-xml 本身不认 rerun，只能自己记）；
+  隔离区用例在主门禁里 deselect，但清单逐条打印。
+- `scripts/flaky_report.py`：从账本产出「重跑才通过 / 隔离区」清单，支持 `--markdown`
+  （贴 step summary）与 `--json`（周报）。本地一条命令即可跑出。
+- `testcases/api/test_flaky_governance_meta.py`：5 条元测试，开真 pytest 子进程验证
+  「标了 flaky 的用例首跑失败会被重跑」「真回归不被重跑吞掉」「隔离区用例退出主门禁且清单被打印」
+  「隔离区能单独跑」。三条机制各配一次反向对照（改坏 → 红 → 还原 → 哈希一致）。
+
 ### 修复 —— 依赖升级暴露的动态属性写法（requests 2.34 自带类型桩）
 
 - **现象**：`dependabot` 的 http-stack 分组 PR（`requests==2.32.3` → `2.34.2`）在 `typecheck` job 变红：
@@ -252,16 +304,17 @@
 
 这些不是"待办清单上的装饰"，是**当前真实存在**的问题，写在这里以免被忘掉：
 
-- **`mock_server/*` 覆盖率恒为 0%**（1358 条 statements）。需要给子进程加
-  `-m coverage run --parallel-mode` 并在用例结束后 `coverage combine`。
-  本机未做。这也是覆盖率门禁只能定在 40% 的根本原因。
 - **`login_app/app.py` 的 6 个已知缺陷**（FIND-01~06）**有意保留**：
   契约用例钉的是"当前行为就是这样"。修好它们会让 `-m login` 变红，
   届时需要同步改用例——顺序是先看差异表，再决定改哪边。
 - **`apis/base.py` 的代理回退判据有缺陷**：`last_error is not None` 记的是
   "这个请求曾经出过传输失败"，而不是"上一次尝试就是传输失败"。
   于是传输失败之后，**由 5xx 触发的重试也会绕过用户显式配置的代理**。
-  `tools/check_retry.py` 的第 13 条用例钉住它（当前 12/13，故意红）。
+  这条缺陷目前**还没有用例钉住**——原计划的「第 13 条」在波 2 之后已被
+  `Retry-After` 的用例占用，补这条缺陷用例时应接在末尾（当前 22 条，补后为 23 条）。
+- **`free_port()` 有一个 TOCTOU 端口竞态**（Windows 本机偶发，非本次改造引入）：
+  它是 bind→close→把端口交给服务，中间有窗口；偶发失败于 `winerror 10013`
+  （端口落在 Windows 动态段 1024–15000 内）。建议后续给它加「启动失败换端口重试」。
 - **mypy 未做到全仓零错误**：`--strict` 下 342 个错误。
   当前配置通过中把已知技术债**逐模块登记**在 `pyproject.toml` 里，
   而不是消灭它们。这是一份有账可查的分阶段方案，不是"已经零错误"。

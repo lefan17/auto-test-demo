@@ -111,6 +111,8 @@ pytest -m contract          # 只跑契约驱动用例（自动导出 spec 的�
 pytest -m ui                # 只跑 UI（需要浏览器）
 pytest -m login             # 只跑登录契约用例（本地服务，1.3 秒，无需公网）
 pytest -m smoke             # 只跑冒烟
+pytest -m flaky             # 允许重跑吸收抖动的用例（当前 = testcases/api 打公网的 33 条）
+pytest -m quarantine        # 隔离区：明知红/不稳定但暂不删除的用例（当前 0 条）
 pytest -n 4 --dist loadfile # 4 进程并行（见下方说明）
 pytest -k "login"           # 按关键字筛选用例
 pytest --lf                 # 只重跑上次失败的用例
@@ -118,6 +120,19 @@ pytest --lf                 # 只重跑上次失败的用例
 # 带覆盖率门禁（CI 用的就是这套组合）
 pytest -m api -n 4 --dist loadfile --cov=. --cov-report=term --cov-report= --cov-fail-under=40
 ```
+
+> **关于 `flaky` 与 `quarantine` 两个标记（波 2）**：`testcases/api/` 那 33 条打公网
+> `jsonplaceholder.typicode.com` 的用例全部挂了 `flaky`。它们的 429/5xx、连接失败、
+> 超时、第三方返回非 JSON、响应过慢会被**重跑一次吸收**（`only_rerun` 收窄到 6 条抖动
+> 指纹）；而**契约类断言红了会当场硬失败，一次都不重跑**——这是「重跑」与「掩盖」的分界。
+> `addopts` 里刻意**不加** `--reruns`：全局重跑会把真回归一起吞掉。
+>
+> 重跑过的用例不会悄悄变绿：`-raR` 里的 `R` 让插件打印 `RERUN` 与
+> `rerun test summary info`，根 `conftest.py` 另外把「重跑才通过 / 重跑仍失败 / 被隔离」
+> 三类写进 `reports/flaky-governance.json`（junit-xml 本身不认 rerun，只能自己记）。
+> `python scripts/flaky_report.py --markdown` 把账本转成两份周报清单——CI 的 step summary
+> 里贴的就是它。`quarantine` 当前 0 条；主门禁里被隔离的用例是 **deselect 而不是判为通过**，
+> 且清单会逐条打印（静默丢弃是另一种死亡方式）。
 
 ### 切换环境档案
 
@@ -212,12 +227,14 @@ pytest --html=report.html --self-contained-html
 
 | 模块 | 用例数 | 覆盖内容 |
 |---|---|---|
-| 接口-用户 | 15 | 列表/详情/创建/更新/过滤，状态码、Schema 契约、字段类型、唯一性、邮箱格式、404 异常分支 |
+| 接口-用户 | 23 | 列表/详情/创建/更新/过滤，状态码、Schema 契约、字段类型、唯一性、邮箱格式、404 异常分支（`test_user_create.py` 12 + `test_user_list.py` 11） |
 | 接口-文章 | 8 | 创建回显、数据驱动、关联过滤、分页参数、更新 |
 | 接口-性能基线 | 2 | 响应时间阈值（可用 `MAX_RESPONSE_MS` 调整）、请求头校验 |
+| 接口-重试退避 | 9 | 波 2 新增：`Retry-After` 的 delta-seconds 与 HTTP-date 两种格式、超上限截断、无头回落指数退避，以及 429 + `Retry-After` 的端到端路径（起本地 `http.server`，请求真的过 socket） |
+| flaky 治理元测试 | 5 | 波 2 新增：开真 pytest 子进程验证「标了 flaky 的用例首跑失败会被重跑」「真契约断言红了不被重跑吞掉」「隔离区用例退出主门禁且清单被打印」「隔离区能单独跑」 |
 | UI-登录 | 6 | 登录成功、4 种失败场景（参数化）、退出登录 |
 | UI-商品/购物车 | 8 | 列表渲染、加购角标、多件参数化、购物车内容一致性、标题 |
-| 业务-MES 全链路 | 54 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 23 条业务（状态机守卫分支、乐观锁并发、幂等键回放/冲突/失败释放/超长拒绝、并发领料不超卖、流水账实一致、权限矩阵双向断言、令牌校验）+ 24 条认证与密钥（9 条口令来源、15 条令牌生命周期） |
+| 业务-MES 全链路 | 55 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 23 条业务（状态机守卫分支、乐观锁并发、幂等键回放/冲突/失败释放/超长拒绝、并发领料不超卖、流水账实一致、权限矩阵双向断言、令牌校验）+ 24 条认证与密钥（9 条口令来源、15 条令牌生命周期）+ 1 条覆盖率采集元测试（波 2 新增） |
 | 契约-自动导出 | 224 | 从 FastAPI 自动导出 `docs/openapi.json`（29 operation）并做漂移门禁；schemathesis 属性测试按 spec 生成请求 + 手写契约与自动导出的逐条对照。扫出 6 类真实契约缺陷：DEF-05/06 已修并由正常用例固化，DEF-01~04 共 11 条 `xfail(strict=True)` 钉住 |
 | 契约-登录 | 29 | 用 5 种设计方法推出的 30 条用例（等价类/边界值/判定表/场景法/错误推测），钉住被测服务当前行为并标注 6 个已知缺陷（FIND-01~06） |
 | 数据隔离 | 会话级 1 项 | 会话结束时各表行数与关键数值列合计（库存可用/占用/已发料、流水数量与账面余额）必须回到基线，且流水余额链逐笔自洽（见下方"数据隔离"一节） |
@@ -326,6 +343,14 @@ pytest --html=report.html --self-contained-html
   但**只重试幂等请求**：GET/PUT/DELETE 可以重放，PATCH 与 POST 不重放
   （PATCH 在 RFC 意义上不保证幂等），POST 只在 429（请求没被处理）时重试，
   因为创建接口在 5xx 后重放可能造出重复订单、重复用户这类脏数据。
+- **重试等待尊重 `Retry-After`**（波 2）：服务端说"2 秒后再来"就等 2 秒，
+  不再按自己的指数退避硬撞。两种格式都认——增量秒（`Retry-After: 2`）与
+  HTTP-date（`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`，日期已过去则不等）；
+  头缺失或值非法时退回指数退避。指数退避带**有界随机抖动**（多线程重试不会挤在
+  同一毫秒惊群），且所有等待都被 `API_MAX_RETRY_WAIT`（默认 30 秒）截断——
+  否则一个 `Retry-After: 3600` 就能把整个用例会话挂死。
+  这条路径由 `testcases/api/test_retry_after.py` 起本地 `http.server` 真实返回
+  429 + `Retry-After` 验证（请求真的过 socket），`tools/check_retry.py` 另有 10 条离线断言。
 - **代理自动回退**：传输失败后的重试会临时绕过系统代理再试一次
   （`proxies={"http": None, "https": None}`）。本机开着 Clash/v2ray 时，`requests`
   会自动走它，而这类代理对某些域名会直接掐断 TLS，报
@@ -372,36 +397,36 @@ pytest --html=report.html --self-contained-html
 
 ## 当前实测结果
 
-> 采集时间 **2026-10-14**（Windows 本机，Python 3.12.10，公网接口用例受网络影响会有波动）。
+> 采集时间 **2026-10-15**（Windows 本机，Python 3.12.10，公网接口用例受网络影响会有波动）。
 > **一个容易看错的点**：`api` 与 `mes`、`login` 三个标记有**重叠** ——
 > `testcases/mes/` 的用例同时打了 `mes` 和 `api`，`testcases/login/` 的同时打了
-> `login` 和 `api`。所以 `-m api` 选到 116 条（33 条纯接口 + 54 条 MES + 29 条登录），
-> **这些数字不能相加**。全量共 354 条 = 33 接口 + 14 UI + 54 MES + 29 登录 + 224 契约。
+> `login` 和 `api`。所以 `-m api` 选到 130 条（47 条接口目录 + 54 条 MES + 29 条登录），
+> **这些数字不能相加**。全量共 369 条 = 47 接口 + 14 UI + 55 MES + 29 登录 + 224 契约。
 > 契约那 224 条是**独立标记**（`-m contract`），不并入 `api` ——
-> 它们要起本地服务、按 spec 生成请求，属于另一档耗时（约 22 秒），
+> 它们要起本地服务、按 spec 生成请求，属于另一档耗时（约 25 秒），
 > 不适合塞进"日常开发随手跑"的那一组。
 
 ```text
-pytest --collect-only -q                 354 tests collected
+pytest --collect-only -q                 369 tests collected
 
-pytest -m api                            116 passed, 238 deselected in 21.08s
-pytest -m mes                             54 passed, 300 deselected in 20.76s
-pytest -m login                           29 passed, 325 deselected in  2.29s
-pytest -m contract                       213 passed, 130 deselected, 11 xfailed in 21.93s
+pytest -m api                            130 passed, 239 deselected in 26.09s
+pytest -m mes                             55 passed, 314 deselected in 25.95s
+pytest -m login                           29 passed, 340 deselected in  2.58s
+pytest -m contract                       213 passed, 145 deselected, 11 xfailed in 18.35s
 pytest -m ui                             14 failed（本机沙箱限制，见下）
 
-pytest -m api -n 4 --dist loadfile       116 passed in 16.94s      # 墙钟约 2.2× 加速
-pytest -m mes -n 4 --dist load            54 passed in 13.97s      # 当前用例集下也绿，见下
-pytest -m mes -n 4 --dist loadfile        54 passed in 16.84s
+pytest -m api -n 4 --dist loadfile       130 passed in 26.09s
+pytest -m mes -n 4 --dist loadfile        55 passed in 17.20s
 CONTRACT_MAX_EXAMPLES=50 pytest -m contract
                                          213 passed, 11 xfailed in 58.05s  # 放大 6.25 倍样例，耗时 ×2.6
 
-pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 3953 1016 74%（74.30%）
-pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 3883 1855 52%（52.23%）
+pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 4371 450 90%（89.70%）
+pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 4301 847 80%（80.31%）
                                         Required test coverage of 40% reached（退出码 0）
 python scripts/export_openapi.py --check 两份 spec [一致]（退出码 0）
-python -m mypy                          Success: no issues found in 65 source files
-python tools/check_retry.py             当前 12/12；补上第 13 条（见下文「为什么这里会短暂出现一次红」）后会先变 12/13（故意红）
+python -m mypy                          Success: no issues found in 74 source files
+python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增 10 条）；
+                                        「代理回退判据」那条缺陷用例仍未补，补上后会先变 22/23（故意红）
 ```
 
 > **`-m ui` 的 14 条在本机跑不了**：全部在 setup 阶段失败于
@@ -409,38 +434,27 @@ python tools/check_retry.py             当前 12/12；补上第 13 条（见下
 > 属**环境限制，不是用例缺陷**。所以这一行给的是实跑结果而不是"通过"。
 > 上一版文档在这里写的 `14 passed ... in 27.26s` 采自另一台机器。
 >
-> **覆盖率门禁挂在 `-m api` 上，而它现在有 52.23%，不是"全量"的 74.30%**：
+> **覆盖率门禁挂在 `-m api` 上，而它现在有 80.31%，不是"全量"的 89.70%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
 > "选取集完全相同"那句当时是对的，现在错了）。
 > 门禁仍定在 40：它要拦的是**退化**，不是卡住当前值。
 >
-> **`mock_server/*` 不再恒为 0%，但盲区没有被消掉**——只是不再显示为字面 0%。
-> 这一点必须说清楚，否则比旧的 0% 更有欺骗性。实测对照：
+> **`mock_server/*` 的覆盖率现在是真行为覆盖**（波 2 · P1-3，见 `docs/wave2-coverage-handoff.md`）。
 >
-> ```
-> pytest -m contract -k "not export_script" --cov=.   # 属性测试 + 漂移/对照用例
->   app.py 0% / routers.py 0% / schemas.py 0% / services.py 0% / deps.py 55%
-> pytest -m contract -k "export_script" --cov=.        # 只跑「把 export_openapi.py 当子进程」的用例
->   app.py 68% / routers.py 35% / schemas.py 100% / services.py 14% / deps.py 45%
-> ```
+> 之前那 0% / 14% 是**采集失败**，不是"没人跑过"：被测服务由 fixture 以常驻子进程拉起
+> （`testcases/mes/mock_server_ctl.py`），收尾走 `terminate()`，而 Windows 上是
+> `TerminateProcess` 强杀 —— coverage 靠 `atexit` 落盘，进程被强杀就什么都不剩。
 >
-> 两组相加正好是全量报告里 `mock_server/*` 的数值。也就是说：`services.py` 那 14%
-> **不是"被测了 14%"，是"模块被 import 时执行了 14% 的语句"**（模块级常量与 `def` 行）。
-> 原因是覆盖率来自契约套件里那些 `subprocess` 调 `scripts/export_openapi.py` 的用例
-> ——子进程被 pytest-cov 的 `COV_CORE_*` 注入、正常退出时 `atexit` 落盘，
-> 于是它 `import mock_server.app` 建 app 时执行的模块级语句被计入。
+> 现在服务经 `scripts/service_launcher.py` 启动：launcher 先在进程内装一个"吸收信号"的
+> handler，uvicorn 关闭时会 `signal.raise_signal(原信号)` 把信号重发给自己
+> （默认处置 = 终结进程、不跑 `atexit`），这个 handler 把它接住，于是 `serve()` 正常返回、
+> 进程走到 `atexit`、分片落盘；`stop()` 同时改成先礼后兵（优雅信号 → `terminate()` → `kill()`）。
+> 分片（`.coveragerc` 的 `[run] parallel = true`）由 pytest-cov 在 session 结束时**自动 combine**，
+> 不需要手工 `coverage combine`，也不需要 `-m coverage run --parallel-mode`。
 >
-> 而**真正逐端点打服务的那批用例（`-m mes`、契约属性测试）对 Handler 路径的贡献为 0**：
-> 被测服务由 fixture 以常驻子进程拉起（`testcases/mes/mock_server_ctl.py`），
-> 收尾走 `terminate()`，而 Windows 上是 `TerminateProcess` 强杀——
-> coverage 靠 `atexit` 落盘，进程被强杀就什么都不剩。实测 `-m mes --cov=mock_server`
-> → `routers.py` / `services.py` 全 0%。
-> （唯一例外是属性测试里那几处**测试进程内**的显式 `from mock_server.deps import ...`，
-> 它让 `deps.py` 涨到 55%——但那是 import，不是请求。）
->
-> 所以 `mock_server` 里最大的文件 `services.py`（359 条 statements）**仍然是完整的盲区**，
-> 它那 14% 只说明"这个模块被导入过"。要让真正的执行进统计，得让常驻子进程优雅退出
-> （或用 `--parallel-mode` + `coverage combine`）——这是下一波要盯的地方。
+> 实测（本机）：`-m mes --cov=mock_server` → TOTAL **9% → 83%**
+> （`routers.py` 0% → 84%、`services.py` 0% → 70%、`deps.py` 0% → 82%、`app.py` 0% → 90%）；
+> `login_app` 同构：`-m login --cov=login_app` → TOTAL **31% → 85%**（`run.py` 0% → 100%）。
 >
 > **`-m contract` 的 xfailed 恒为 11**：DEF-01、DEF-02a、DEF-02b(×6)、DEF-03、DEF-04(×2)。
 > 它们都是 `strict=True`，所以**修好一条，xpass 会立刻把门禁打红**——
@@ -457,9 +471,10 @@ python tools/check_retry.py             当前 12/12；补上第 13 条（见下
 > `apis/base.py` 的代理回退判据 `last_error is not None` 记的是「这个请求曾经出过传输失败」，
 > 而不是「上一次尝试就是传输失败」，于是一次传输失败之后，**由 5xx 触发的重试也会绕过用户显式配置的代理**。
 >
-> **先加用例、看它红（12/13）、再改代码、再看它绿（13/13）** —— 顺序倒了就没有证据链。
-> 完整步骤：该自检脚本是 `tools/check_retry.py`（每条自检都有编号注释，现有 12 条），
-> 第 13 条按同一格式补在末尾即可；它钉的分支在 `apis/base.py` 的 `request()` / `_should_retry()`。
+> **先加用例、看它红、再改代码、再看它绿** —— 顺序倒了就没有证据链。
+> 完整步骤：该自检脚本是 `tools/check_retry.py`（每条自检都有编号注释，波 1 收工时有 12 条，
+> 波 2 之后是 22 条），补这一条时按同一格式接在末尾即可（编号会变成 23）；
+> 它钉的分支在 `apis/base.py` 的 `request()` / `_should_retry()`。
 
 > 接口用例跑的是公网 `jsonplaceholder.typicode.com`。这个站会**限流**：
 > 短时间内连续跑多轮全量用例，会开始返回 429 或直接读超时。
@@ -470,6 +485,7 @@ python tools/check_retry.py             当前 12/12；补上第 13 条（见下
 > $env:API_RETRIES = "2"         # 重试次数（默认 2）
 > $env:MAX_RESPONSE_MS = "5000"  # 响应时间断言阈值（默认 5000，公网接口要放宽）
 > $env:API_TRUST_ENV = "0"       # 关掉"失败后绕过代理重试"
+> $env:API_MAX_RETRY_WAIT = "30" # 单次重试等待的硬上限秒数（默认 30）
 > ```
 >
 > 换成自己公司的内网接口后，`MAX_RESPONSE_MS` 应收到 200-500ms 才有性能门禁的意义。
@@ -482,7 +498,7 @@ python tools/check_retry.py             当前 12/12；补上第 13 条（见下
 |---|---|---|
 | `lint` | `ruff check .` + `ruff format --check .`（规则全部来自仓库根的 `ruff.toml`） | ✅ 拦 |
 | `typecheck` | `python -m mypy`（配置来自 `pyproject.toml`） | ✅ 拦 |
-| `test` | 先做契约漂移门禁 → 契约属性测试 → 再跑四组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约）+ 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
+| `test` | 先做契约漂移门禁 → 契约属性测试 → 再跑四组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约）→ 汇总 flaky 治理账本 + 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
 | `security` | `pip-audit --requirement requirements.lock --strict` | ❌ 不拦（见下） |
 | `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂 | ✅ 拦 |
 | `commit-convention` | 拿最近 30 条真实提交跑 `scripts/check_commit_msg.py` | ✅ 拦（逐条警告，不聚合） |

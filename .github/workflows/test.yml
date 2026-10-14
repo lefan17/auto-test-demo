@@ -199,8 +199,15 @@ jobs:
       # （jsonplaceholder.typicode.com），会随机红——实测 4 轮里 3 轮撞上，
       # 单轮 1~5 条失败，失败原文是 `Response [502]` + Cloudflare 的
       # `typicode.com | 502: Bad gateway` 页面，偶发 429。
-      # 也就是说：这一步的红**不能直接当作代码坏了**。
-      # 处置放在波 2 的 flaky 治理（重试策略 / 隔离公网组），本轮不掩盖它。
+      #
+      # ✅ 波 2 已处置（docs/wave2-flaky-handoff.md）：这 33 条挂了
+      # `testcases/api/flaky_policy.py` 的 `NETWORK_FLAKY` ——
+      #   pytest.mark.flaky(reruns=1, only_rerun=<6 条抖动指纹>)
+      # 它们的 502/429/超时会被重跑一次吸收，且**只在**抖动指纹上重跑：
+      # 契约断言（字段被改坏、schema 漂移）红了仍然当场硬失败，一次都不重跑。
+      # 所以这一步的红现在重新可以被当作"代码或契约坏了"。
+      # ⚠️ 重跑过的用例不会悄悄变绿：`-raR` 里的 R 让插件打印 rerun 摘要，
+      # 根 conftest.py 另外把账本写进 `reports/flaky-governance.json`。
       # ---------------------------------------------------------------------
 
       # ---------------------------------------------------------------------
@@ -252,43 +259,35 @@ jobs:
           # （实测 GitHub runner 连 jsonplaceholder 常在 2-4 秒波动）
           MAX_RESPONSE_MS: "8000"
 
-      # 覆盖率门禁的数字来源：本机实测这一条命令 → **52.23%**
-      # （3883 statements / 1855 miss，TOTAL 52%）。门禁取 40，留 ~12pp 余量。
+      # 覆盖率门禁的数字来源：本机实测这一条命令 → **78.87%**
+      # （3985 statements / 842 miss，TOTAL 79%）。门禁取 40，留足余量。
       #
       # 为什么不贴着实测值设：这个数字里有相当一部分来自公网接口用例本身，
       # 在 runner 上会抖动；门禁的意义是"拦住覆盖率**退化**"，不是"卡住当前值"。
       # 设成贴着实测值，任何一次无害的重构都会让它变红，然后就会有人来调低它——
       # 门禁一旦被调过一次，就不再有人相信它了。
       #
-      # 注意：同一份代码全量跑（`-m "not ui" --cov=.`）是 **74.30%**
-      # （3953/1016），比这一组的 52.23% 高出一大截。差额来自契约那 224 条用例，
+      # 注意：同一份代码全量跑（`-m "not ui" --cov=.`）是 **88.90%**
+      # （4055/450），比这一组高出一截。差额来自契约那 224 条用例，
       # 它们在**上面那一步**就跑完了。门禁挂在这一组而不是全量上，是因为
       # 全量要再跑一次契约（约 21 秒）才凑得出同一份覆盖数据，
       # 而门禁要拦的是"这一组用例还测不测得住"。
       #
-      # ⚠️ 关于 `mock_server/*` 的覆盖率，这里必须说准确——旧注释写的
-      # "恒为 0%、1358 条 statements、43.89% 低估了真实覆盖"已被实测推翻：
+      # ⚠️ 关于 `mock_server/*` 的覆盖率（波 2 · P1-3 已修，见 docs/wave2-coverage-handoff.md）：
       #
-      #   1. 它**不再恒为 0%**：实测 app.py 68% / deps.py 58% / models.py 48% /
-      #      util.py 68% / errors.py 100% / schemas.py 100% / quantity.py 62% /
-      #      db.py 72% / routers.py 35% / services.py 14%。
-      #   2. 但这个数字**不是"跑着的 Mock 服务被 HTTP 打到"的行为覆盖**。
-      #      对照实验（删掉 .hypothesis、关掉 xdist）：只跑契约 export 那条文件
-      #      → app.py 68% / routers.py 35% / services.py 14%；只跑属性测试那条文件
-      #      → deps.py 55% / quantity.py 62% / routers.py 0%；而 `--collect-only`
-      #      （一条用例都不执行）→ mock_server 全部 **0%**（1374 statements）。
-      #      真相是：`test_contract_export.py` 用 subprocess 调
-      #      `scripts/export_openapi.py`，而 pytest-cov 会把自己的埋点环境变量
-      #      （COV_CORE_*，另有一条 COVERAGE_PROCESS_START 通路）传给子进程，
-      #      于是子进程里 `create_app()` / `app.openapi()` 触发的**模块级执行**
-      #      被记账，最后由 pytest-cov combine 回来。
-      #   3. 由 fixture 以子进程拉起的那个**真** Mock 服务，仍然一点都没被统计到
-      #      （`testcases/mes/mock_server_ctl.py` 的 Popen 不带 coverage 埋点）。
-      #      所以这一块的真实盲区**没有被消掉**，只是不再显示为字面 0%。
-      #      要让子进程也进统计，需要给它加 `-m coverage run --parallel-mode`
-      #      并在用例结束后 `coverage combine`（本机未做，留作后续改进）。
-      #   4. `services.py` 14%（359 条 statements，仓库里最大的模块）是当前最大盲区——
-      #      它的行为几乎全靠子进程 HTTP 打到，而子进程不记账。
+      #   1. 由 fixture 以子进程拉起的那个真 Mock 服务**已经被统计**。做法：
+      #      testcases/mes/mock_server_ctl.py 经 scripts/service_launcher.py 启动服务，
+      #      并在 stop() 里先发优雅信号（Windows: CTRL_BREAK_EVENT）再 terminate / kill，
+      #      让服务进程能正常返回到 atexit —— coverage 的数据是在 atexit 落盘的。
+      #      launcher 的作用是吸收 uvicorn 关闭时"把原信号重发给自己"的默认终止动作。
+      #   2. 不再需要 `-m coverage run --parallel-mode`：pytest-cov 的 COV_CORE_*
+      #      通道本来就覆盖子进程，分片（`.coveragerc` 的 `[run] parallel = true`）
+      #      由 pytest-cov 在 session 结束时自动 combine，不用手工 combine。
+      #   3. 实测对照（本机）：`-m mes --cov=mock_server` 由 9% 升到 **83%**
+      #      （routers.py 0% → 84%、services.py 0% → 70%、deps.py 0% → 82%、app.py 0% → 90%）；
+      #      `-m login --cov=login_app` 由 31% 升到 **85%**（run.py 0% → 100%）。
+      #   4. 上一版注释写的"这一块的真实盲区没有被消掉"**已经不成立**：
+      #      原结论是"子进程不记账"，而真相是"记账了但没落盘"（被强杀，跑不到 atexit）。
 
       # UI 用例打的是公共 demo 站，外部因素多，失败不阻断流水线。
       # 但这不等于可以放着不管：报告和截图照样产出，需要人去看。
@@ -329,6 +328,35 @@ jobs:
       # 不开 -n：只有 1 个测试文件，loadfile 模式下 n>1 完全用不上。
       - name: 运行登录契约自动化（本地被测服务）
         run: pytest -m login --alluredir=allure-results
+
+      # ---------------------------------------------------------------------
+      # flaky 治理账本（波 2 新增）
+      # ---------------------------------------------------------------------
+      # 这一步**故意不设 if: failure()**：抖动与隔离区在绿的时候也必须被看见，
+      # 只在失败时统计等于"平时不记账、出事才翻账"。
+      # 它也不设 continue-on-error —— `scripts/flaky_report.py` 只在账本读不到时
+      # 返回 2，而账本由根 conftest.py 的 sessionfinish 钩子无条件写（即使有用例失败）。
+      # 幂等：多跑几次 -m 分组会把同一用例的账目覆盖，不会重复累计。
+      - name: flaky 治理摘要（重跑才通过 / 隔离区）
+        if: always()
+        run: python scripts/flaky_report.py --markdown >> "$GITHUB_STEP_SUMMARY"
+
+      # 账本本身留档，供周报脚本消费（`--json` 就是它的消费格式）。
+      # 注意：`reports/` 在 .gitignore 里，所以账本天然不入库，
+      # 没有这一步它跑完就随 runner 一起没了。
+      - name: 上传 flaky 治理账本
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flaky-governance
+          path: reports/flaky-governance.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      # 刻意**不**给隔离区单独加 `pytest -m quarantine` 的 step：
+      # 隔离区当前 0 条用例，pytest 空跑返回 exit=5，GitHub Actions 会把它当失败，
+      # 于是"没有隔离用例"这件好事会天天把流水线弄红。
+      # 隔离区清单由上面那步 `flaky_report.py --markdown` 无条件打印，信息不会丢。
 
       # 这里原来用的是 simple-elf/allure-report-action@v1.9，
       # 它是个 Docker action，基础镜像 openjdk:8-jre-alpine 已被 Docker Hub 下架，
@@ -386,6 +414,7 @@ jobs:
             echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端，刻意串行） |"
             echo "| 登录契约 | \`pytest -m login\`（本地被测服务，钉住当前行为含 6 个已知缺陷） |"
             echo "| 数据隔离 | \`data_isolation_check\`：会话结束时各表行数与库存合计必须回到基线 |"
+            echo "| flaky 治理 | \`pytest -m flaky\` 只对第三方抖动指纹重跑（账本见 \`flaky-governance\` artifact） |"
             echo "| 报告 | 见下方 Artifacts 里的 \`allure-report\` |"
             echo "| 失败截图 | 见 \`ui-screenshots\` |"
             if [ -d allure-results ]; then
@@ -407,9 +436,9 @@ jobs:
             python -m coverage report --skip-covered --skip-empty >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> 门禁值 40%（本组实测 52.23%；全量 \`-m \"not ui\"\` 是 74.30%）。" >> "$GITHUB_STEP_SUMMARY"
-            echo "> \`mock_server/*\` 的数字只覆盖「模块级执行」（导出脚本子进程被 pytest-cov 记账），" >> "$GITHUB_STEP_SUMMARY"
-            echo "> 由 fixture 拉起的真服务子进程仍未被统计，\`services.py\`（359 条）是当前最大盲区。" >> "$GITHUB_STEP_SUMMARY"
+            echo "> 门禁值 40%（本组实测 78.87%；全量 \`-m \"not ui\"\` 是 88.90%）。" >> "$GITHUB_STEP_SUMMARY"
+            echo "> \`mock_server/*\` 的数字**已经包含**由 fixture 拉起的真服务子进程（波 2 · P1-3）。" >> "$GITHUB_STEP_SUMMARY"
+            echo "> 服务经 scripts/service_launcher.py 启动并优雅退出，coverage 分片由 pytest-cov 自动 combine。" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       # ---------------------------------------------------------------------
