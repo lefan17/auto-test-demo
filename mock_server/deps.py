@@ -19,6 +19,12 @@ from mock_server.security import decode_token, ensure_permission
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 20
 
+# SQLite 的 INTEGER 是有符号 64 位。OFFSET 一旦超过这个上限，sqlite3 会抛
+# `OverflowError: Python int too large to convert to SQLite INTEGER`，
+# 该异常不属于 BizError，会一路逃到 app.py 的兜底处理器变成 500 INTERNAL_ERROR。
+# 所以 offset 必须在这一层就被挡成 400，而不是等数据库报错。
+MAX_SQLITE_INTEGER = 2**63 - 1
+
 
 @dataclass(frozen=True)
 class CurrentUser:
@@ -121,6 +127,17 @@ def get_pagination(
             page_size=page_size,
             max_page_size=MAX_PAGE_SIZE,
         )
+    # page 没有上界时，offset = (page - 1) * page_size 会溢出 SQLite 的 INTEGER，
+    # 由数据库驱动抛出 OverflowError → 500。这里是纯输入范围问题，用 400 挡回去：
+    # 与 page < 1 同类同码，前端拿到的一样是"你这个页码没法用"。
+    offset = (page - 1) * page_size
+    if offset > MAX_SQLITE_INTEGER:
+        raise PaginationOutOfRange(
+            f"page 过大：page={page} × page_size={page_size} 超出可寻址范围，请改用更小的页码",
+            page=page,
+            page_size=page_size,
+            max_offset=MAX_SQLITE_INTEGER,
+        )
     return Pagination(page=page, page_size=page_size)
 
 
@@ -152,6 +169,7 @@ def resolve_sort(sort: str | None, allowed: dict[str, str], default: str) -> tup
 
 __all__ = [
     "CurrentUser",
+    "MAX_SQLITE_INTEGER",
     "Pagination",
     "PermissionDenied",
     "get_current_user",
