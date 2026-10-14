@@ -101,7 +101,9 @@ markupsafe==3.0.4
 multidict==7.1.0
     # via yarl
 packaging==26.3
-    # via pytest
+    # via
+    #   pytest
+    #   pytest-rerunfailures
 playwright==1.48.0
     # via
     #   -r requirements.txt
@@ -131,6 +133,7 @@ pytest==8.3.3
     #   pytest-html
     #   pytest-metadata
     #   pytest-playwright
+    #   pytest-rerunfailures
     #   pytest-subtests
     #   pytest-xdist
     #   schemathesis
@@ -143,6 +146,8 @@ pytest-html==4.1.1
 pytest-metadata==3.1.1
     # via pytest-html
 pytest-playwright==0.5.2
+    # via -r requirements.txt
+pytest-rerunfailures==16.7
     # via -r requirements.txt
 pytest-subtests==0.14.2
     # via schemathesis
