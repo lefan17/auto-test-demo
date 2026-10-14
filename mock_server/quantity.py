@@ -47,10 +47,17 @@ def parse_qty(value: str | int | float | None, field: str = "quantity") -> int:
         raise ValidationFailed(f"字段 {field} 不能为空")
     try:
         dec = Decimal(str(value))
+        # Decimal("NaN") / Decimal("INFINITY") 在 CPython 里**能构造成功**，但既不是
+        # 有限值也不是合法数量；1e999999 这类巨指数则会在 quantize 时抛 InvalidOperation。
+        # 两者都必须在这里归为"不是合法数字"，否则异常会逃出本函数、被 app.py 的兜底
+        # 处理器变成 500 INTERNAL_ERROR——输入格式问题不该让服务崩（DEF-05）。
+        if not dec.is_finite():
+            raise ValidationFailed(f"字段 {field} 不是合法数字: {value!r}")
+        quantized = dec.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError) as exc:
         raise ValidationFailed(f"字段 {field} 不是合法数字: {value!r}") from exc
 
-    if dec != dec.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP):
+    if dec != quantized:
         raise ValidationFailed(f"字段 {field} 最多支持 3 位小数: {value!r}")
 
     milli = int((dec * QTY_SCALE).to_integral_value(rounding=ROUND_HALF_UP))
@@ -67,9 +74,12 @@ def parse_qty_allow_zero(value: str | int | float | None, field: str = "quantity
         raise ValidationFailed(f"字段 {field} 不能为空")
     try:
         dec = Decimal(str(value))
+        if not dec.is_finite():
+            raise ValidationFailed(f"字段 {field} 不是合法数字: {value!r}")
+        quantized = dec.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError) as exc:
         raise ValidationFailed(f"字段 {field} 不是合法数字: {value!r}") from exc
-    if dec != dec.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP):
+    if dec != quantized:
         raise ValidationFailed(f"字段 {field} 最多支持 3 位小数: {value!r}")
     milli = int((dec * QTY_SCALE).to_integral_value(rounding=ROUND_HALF_UP))
     if abs(milli) > MAX_QTY_MILLI:
@@ -107,9 +117,12 @@ def parse_cent(value: str | int | float | None, field: str = "unit_price") -> in
         raise ValidationFailed(f"字段 {field} 不能为空")
     try:
         dec = Decimal(str(value))
+        if not dec.is_finite():
+            raise ValidationFailed(f"字段 {field} 不是合法金额: {value!r}")
+        quantized = dec.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError) as exc:
         raise ValidationFailed(f"字段 {field} 不是合法金额: {value!r}") from exc
-    if dec != dec.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP):
+    if dec != quantized:
         raise ValidationFailed(f"字段 {field} 最多支持 2 位小数: {value!r}")
     cent = int((dec * CENT_SCALE).to_integral_value(rounding=ROUND_HALF_UP))
     if cent < 0:
