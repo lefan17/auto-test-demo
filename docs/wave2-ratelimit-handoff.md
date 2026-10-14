@@ -2,12 +2,15 @@
 
 工作副本 `C:\Users\lefan\DSH_project\接口自动化_3\work\w2-ratelimit`（隔离仓库，无 remote）。
 基线 commit `44fc60d`（`docs: 波 1 的口令、契约与实测数字同步到 README 与 CHANGELOG`）。
-本次产出 2 条提交：
+本次产出 **3 条提交**：
 
 - `4780655` `feat(api): 重试等待优先尊重 Retry-After 并加有界退避` —— 代码与用例
-- 第 2 条 `docs(handoff): …` —— 本文件（自己的 SHA 不写死在这里，见 `git log --oneline`）
+- `0187624` `test(api): 修正 Retry-After 端到端用例的偶发失败` —— 见第七节第 11 条
+- `docs(handoff): 补齐波 2 限流退避的交接文档` —— 本文件（自己的 SHA 见 `git log --oneline`）
 
-引用行号时请以 `4780655` 为准：本文件不参与任何代码行号的计算。
+引用代码行号时以 `0187624` 为基准：`apis/base.py` 与 `tools/check_retry.py`
+从 `4780655` 起**逐字节未变**，只有 `testcases/api/test_retry_after.py`
+在 `0187624` 里从 201 行改到 211 行。
 
 解释器固定为 `C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`，
 每次跑测试/静态检查前设：
@@ -24,7 +27,6 @@ $env:PYTHONIOENCODING = 'utf-8'
 所以「先加用例、看它红、再改代码、再看它绿」这条链在**同一次提交内**用
 反向对照实验（第三节）给出证据，而不是靠拆提交给出。
 提交信息已通过 `scripts/check_commit_msg.py`（见第五节第 9 条）。
-提交信息已通过 `scripts/check_commit_msg.py`（见第五节第 9 条）。
 
 ---
 
@@ -34,7 +36,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 | 文件 | 行数 | 为什么新建 |
 |---|---|---|
-| `testcases/api/test_retry_after.py` | 201 | 端到端证据。用 stdlib `http.server.ThreadingHTTPServer` 起在临时端口（`:65` `("127.0.0.1", 0)`），真实返回 `429 + Retry-After`，让请求真的过一遍 socket。`tools/check_retry.py` 那些 Mock 证明的是「分支选对了」，证明不了「这个头是从真实响应里读出来的」——`requests` 的 `CaseInsensitiveDict`、大小写、header 折行、HTTP 版本差异只在真过 socket 时才可能出现。 |
+| `testcases/api/test_retry_after.py` | 211（`4780655` 里是 201，`0187624` 修了一次 flaky，见第七节第 11 条） | 端到端证据。用 stdlib `http.server.ThreadingHTTPServer` 起在临时端口（`:75` `("127.0.0.1", 0)`），真实返回 `429 + Retry-After`，让请求真的过一遍 socket。`tools/check_retry.py` 那些 Mock 证明的是「分支选对了」，证明不了「这个头是从真实响应里读出来的」——`requests` 的 `CaseInsensitiveDict`、大小写、header 折行、HTTP 版本差异只在真过 socket 时才可能出现。 |
 | `docs/wave2-ratelimit-handoff.md` | 本文件 | — |
 
 ### 修改文件
@@ -135,23 +137,23 @@ FAILED testcases/api/test_retry_after.py::test_past_http_date_retries_immediatel
 FAILED testcases/api/test_retry_after.py::test_huge_retry_after_is_capped - A...
 FAILED testcases/api/test_retry_after.py::test_post_429_respects_retry_after
 FAILED testcases/api/test_retry_after.py::test_gives_up_and_returns_last_response
-=================== 6 failed, 3 passed, 1 warning in 5.01s ====================
+=================== 6 failed, 3 passed, 1 warning in 4.85s ====================
 exit=1
 ```
 
-6 条断言原文（都是「实际等成了退避值」）：
+6 条断言原文（都是「实际等成了退避值」；行号对应当前文件，即 `0187624` 之后的版本）：
 
 ```
-E       AssertionError: 应等 2s，实际 [0.5814464597630536]
-testcases\api\test_retry_after.py:93: AssertionError
-E       AssertionError: 应等约 15s，实际 [0.5414691765455997]
-testcases\api\test_retry_after.py:110: AssertionError
-E       AssertionError: 过去的日期应立刻重试，实际 [0.5853496346070378]
-testcases\api\test_retry_after.py:123: AssertionError
-E       AssertionError: 应被 cap 到 3.0，实际 [0.592090685250119]
-testcases\api\test_retry_after.py:136: AssertionError
-testcases\api\test_retry_after.py:172: AssertionError
-testcases\api\test_retry_after.py:184: AssertionError
+E       AssertionError: 应等 2s，实际 [0.5396184794453419]
+testcases\api\test_retry_after.py:103: AssertionError
+E       AssertionError: 应等约 15s，实际 [0.624231067137788]
+testcases\api\test_retry_after.py:120: AssertionError
+E       AssertionError: 过去的日期应立刻重试，实际 [0.5037941072043102]
+testcases\api\test_retry_after.py:133: AssertionError
+E       AssertionError: 应被 cap 到 3.0，实际 [0.5826411936686198]
+testcases\api\test_retry_after.py:146: AssertionError
+testcases\api\test_retry_after.py:182: AssertionError
+testcases\api\test_retry_after.py:194: AssertionError
 ```
 
 同一次破坏下 `& $PY tools\check_retry.py`：
@@ -192,21 +194,29 @@ git rev-parse  HEAD:apis/base.py             9b19913bd77567792a768a3bf25ce346543
 ### ruff format --check .   83 files already formatted                 exit=0
 ### mypy                    Success: no issues found in 66 source files exit=0
 ### check_retry             结果: 22/22 通过                            exit=0
-### 我的新用例               9 passed, 1 warning in 4.84s               exit=0
+### 我的新用例               9 passed, 1 warning in 4.75s               exit=0
 ```
 
-（`testcases/api/test_retry_after.py` 在破坏期间一行未动，所以 3.2 里的行号
-`:93/:110/:123/:136/:172/:184` 与当前文件逐行对应。）
+（`testcases/api/test_retry_after.py` 在破坏期间一行未动，所以上方的行号
+`:103/:120/:133/:146/:182/:194` 与当前文件逐行对应。）
 
 ---
 
 ## 四、端到端证据的构成
 
-`testcases/api/test_retry_after.py` 的 `scripted_server`（`:33-73`）用 stdlib 的
-`ThreadingHTTPServer` 绑 `("127.0.0.1", 0)` 拿系统分配的临时端口，按脚本依次回响应；
+`testcases/api/test_retry_after.py` 的 `scripted_server`（`:33-83`）用 stdlib 的
+`ThreadingHTTPServer` 绑 `("127.0.0.1", 0)`（`:75`）拿系统分配的临时端口，按脚本依次回响应；
 `state["hits"]` 计的是**服务端真实收到的请求数**（socket 另一端数的），不是 Mock 的 `call_count`。
-每条用例都把 `api._sleep` 换成记录器（`:76-81`），并且**额外断言墙上时钟**——
-`assert wall < 1.0` 证明等待确实没发生，否则「等待可注入」就成了一句空话。
+每条用例都经 `make_api`（`:86-91`）把 `api._sleep` 换成记录器，
+并且**额外断言墙上时钟**——`assert wall < 1.0` 证明等待确实没发生，
+否则「等待可注入」就成了一句空话。
+
+⚠️ **这个真服务本身踩过一次坑，改动记在 `:50` 与 `:56`**：Handler 最初没读请求体、
+也没声明 `protocol_version = "HTTP/1.1"`，于是 POST 请求（带 json body）在服务端
+关闭 socket 时还有未读数据，Windows 直接回 RST，客户端复用连接时看到
+`ConnectionAbortedError(10053)`，被 `apis/base.py` 当成一次传输失败而多重试一次——
+`:171` 的 `assert state["hits"] == 2` 就会偶发变成 `3`。修法是让 Handler 读干净请求体
+并复用连接。**这是我自己的用例缺陷，不是被测代码的问题。**（第七节第 11 条）
 
 9 条：`Retry-After: 2` → 等 2s（`wait==[2.0]`）、HTTP-date → 约 15s、
 过去的日期 → `[0]`、`3600` 被 cap 到构造参数给的 3.0、非法值 → 落回退避区间、
@@ -470,7 +480,7 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
    如果你认为必须有一条真的睡下去，请给一个可接受的时长上限，我加一条
    `Retry-After: 1` 的真等待用例（1s）。
 
-2. **`_retry_after_seconds` 的 HTTP-date 容差是 ±2s**（`tools/check_retry.py:264`、用例 `:110`）。
+2. **`_retry_after_seconds` 的 HTTP-date 容差是 ±2s**（`tools/check_retry.py:264`、用例 `testcases/api/test_retry_after.py:120`）。
    这个容差覆盖的是「构造头 → 解析」之间流逝的时间。机器极端卡顿时可能偶发红；
    我没见过（实测偏差 19.36s / 15s 附近），但这是理论上的 flaky 面。
 
@@ -506,10 +516,35 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
    修掉了 `apis/base.py` 的 `max_retry_wait` 三元表达式与 `tools/check_retry.py` 的一条长 print。
 
 9. **`README.md:399-400` 的覆盖率数字我没有重测**（要求「六条自检命令」里没有 `--cov`）。
-   我新增的 201 行测试代码会略微抬高 `-m api` 的覆盖率分子，
+   我新增的 211 行测试代码会略微抬高 `-m api` 的覆盖率分子，
    但 `apis/base.py` 的新分支是否被 cover 到、TOTAL 从 `74%` 变成多少，**我给不出实测值**。
    如果你要更新那两个数字，请单独跑一次 `--cov`。
 
 10. **没有跑 pre-commit**（本机装不上）。新文件我按规则写了
     （末尾单换行、行尾无空格、LF），但**未经 hook 实测**。
     `git hash-object` 与 `HEAD:` 逐字节相同可排除行尾差异。
+
+11. **我自己的端到端用例有过一次 flaky，已修**（`0187624` 的内容就是这个）。
+    现象：`-m api -n 4 --dist loadfile` 首次跑出 `1 failed, 124 passed`，
+    红的是 `testcases/api/test_retry_after.py::test_post_429_respects_retry_after`，
+    断言原文 `assert 3 == 2`（`:171`），隔离复跑 20 次命中 1 次、又复跑 30 次在第 6 次命中。
+    日志显示第 2 次尝试是
+    `传输失败(2/3): ('Connection aborted.', ConnectionAbortedError(10053, '你的主机中的软件中止了一个已建立的连接。', None, 10053, None))`。
+    **机理**：`BaseHTTPRequestHandler` 默认 HTTP/1.0 且我的 `_handle` 不读请求体，
+    POST 带 body 时服务端在 socket 里还剩未读数据就关闭连接，Windows 回 RST；
+    客户端复用 keep-alive 连接的那一次请求就变成「传输失败」，
+    `apis/base.py` 照既有语义重试一次，于是服务端多收到一次请求。
+    **修法**：Handler 设 `protocol_version = "HTTP/1.1"`（`:50`）
+    并在计数前把 `Content-Length` 指定的字节读干净（`:54-56`）。
+    修后连跑 40 次整文件 0 失败；随后 `-m api` 全量连跑 3 次全绿。
+    **教训**：用真 socket 换来的保真度是有代价的——`Mock` 不会因为
+    「服务端没读 body」而多报一次请求。这条留在文档里，避免下一个人把它误判成
+    `apis/base.py` 的重试逻辑有问题。
+
+12. **本文件的行号引用以 `0187624`（含 flaky 修复的那条）为基准**。
+    `0187624` 只改了 `testcases/api/test_retry_after.py`（201 → 211 行）；
+    `apis/base.py` 与 `tools/check_retry.py` 从 `4780655` 起**逐字节未变**
+    （`git hash-object` 与 `HEAD:` 相同：`9b19913b…` / `5c379580…`），
+    所以第一节里这两个文件的行号表仍然有效。
+    `testcases/api/test_retry_after.py` 的行号则按 211 行版本引用
+    （例如 `:50`、`:54-56`、`:75`、`:103`、`:171`）。
