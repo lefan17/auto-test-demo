@@ -6,6 +6,16 @@ allure-pytest==2.13.5
 pytest-xdist==3.6.1
 pytest-cov==6.0.0
 
+# 重跑治理（flaky 用例与隔离区，见 docs/wave2-flaky-handoff.md）。
+# 只 pin 这一个直接依赖：插件自己不声明额外的运行期依赖，没有传递依赖要接手，
+# 和下面 schemathesis 段的理由一致——传递依赖由 requirements.lock 全量钉死。
+# 为什么**不能**顺手在 pytest.ini 的 addopts 里写全局 --reruns：
+# 全局重跑会对**每一条**用例生效，真回归（断言写错、接口字段被改坏）只要第二次
+# 侥幸通过就会被吞成绿灯，门禁只剩一个装饰性的绿色。所以只有显式标了
+# flaky marker 的用例才重跑，并且用 only_rerun 把重跑收窄到「第三方抖动」指纹
+# （429/5xx、连接失败、响应过慢）；不匹配指纹的失败当场硬失败，一次都不重跑。
+pytest-rerunfailures==16.7
+
 # === 接口测试 ===
 requests==2.32.3
 PyYAML==6.0.2
