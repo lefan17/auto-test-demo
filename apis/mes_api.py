@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 from apis.base import BaseApi
+from apis.token_provider import LoginResult, TokenProvider
 from common.secrets import ROLE_ACCOUNTS, role_password, role_username
 
 __all__ = ["ROLE_ACCOUNTS", "ApiError", "MesApi", "RoleClient"]
@@ -37,36 +38,61 @@ class RoleClient:
     共享 Session 的好处是连接复用、日志统一；token 通过显式 header 传，
     不污染 Session 的默认 Authorization，避免"用例 A 设了 ADMIN token，
     用例 B 以为自己是 OPERATOR"这种串号事故。
+
+    token 由 `TokenProvider` 持有，**不在这里缓存成一个字符串**。
+    改造前这里存的是 `self.token`（登录那一刻的字符串），后果是：
+    令牌在别处刷新之后，这个视图仍然拿着旧值继续发请求 —— 也就是
+    "同一个对象里两个令牌来源"这种串号/过期事故的典型形态。
+    现在 `token` 变成只读属性、每次都向 provider 要当前值，
+    `_headers()` 每发一次请求就取一次，刷新对已缓存的视图立刻可见。
     """
 
-    def __init__(self, api: "MesApi", token: str, username: str, role: str):
+    def __init__(self, api: "MesApi", provider: TokenProvider, username: str, role: str):
         self._api = api
-        self.token = token
+        self._provider = provider
         self.username = username
         self.role = role
 
+    @property
+    def token(self) -> str:
+        """当前令牌（读时向 provider 取，可能触发一次提前刷新）。"""
+        return self._provider.token
+
+    @property
+    def provider(self) -> TokenProvider:
+        return self._provider
+
     # ---------- 请求 ----------
-    def _headers(self, extra: dict | None = None) -> dict:
-        headers = {"Authorization": f"Bearer {self.token}"}
-        if extra:
-            headers.update(extra)
-        return headers
+    def _request(self, method: str, path: str, **kwargs):
+        """把「令牌来源」随请求一起交给 BaseApi，由它在发包那一刻取当前令牌。
+
+        为什么不再自己拼 `Authorization`：
+        1. 自己拼的时候，头部在**进入重试循环之前**就固化成字符串了，
+           而 401 重放的意义正是"用换过的新令牌再发一次"——令牌到不了那一层，
+           重放只会再吃一个 401；
+        2. 调用方显式传的 headers 仍然优先（`_with_token` 只在缺少该头时填），
+           所以用例里手工构造 Authorization 的写法不受影响。
+        """
+        kwargs["_token_source"] = self._provider
+        return getattr(self._api, method)(path, **kwargs)
 
     def get(self, path: str, **kwargs):
-        return self._api.get(path, headers=self._headers(kwargs.pop("headers", None)), **kwargs)
+        return self._request("get", path, **kwargs)
 
     def post(self, path: str, json: Any = None, **kwargs):
-        return self._api.post(path, json=json, headers=self._headers(kwargs.pop("headers", None)), **kwargs)
+        return self._request("post", path, json=json, **kwargs)
 
     def put(self, path: str, json: Any = None, **kwargs):
-        return self._api.put(path, json=json, headers=self._headers(kwargs.pop("headers", None)), **kwargs)
+        return self._request("put", path, json=json, **kwargs)
 
     def delete(self, path: str, **kwargs):
-        return self._api.delete(path, headers=self._headers(kwargs.pop("headers", None)), **kwargs)
+        return self._request("delete", path, **kwargs)
 
     def post_idem(self, path: str, key: str, json: Any = None, **kwargs):
         """带幂等键的 POST。幂等是这批用例的重点，单独给个入口提醒别忘传。"""
-        return self.post(path, json=json, headers={IDEMPOTENCY_HEADER: key}, **kwargs)
+        headers = dict(kwargs.pop("headers", None) or {})
+        headers[IDEMPOTENCY_HEADER] = key
+        return self.post(path, json=json, headers=headers, **kwargs)
 
 
 class MesApi(BaseApi):
@@ -84,21 +110,44 @@ class MesApi(BaseApi):
         """原始登录请求，供登录用例断言各种失败分支。"""
         return self.post("/auth/login", json={"username": username, "password": password})
 
-    def login_ok(self, username: str, password: str):
-        """登录并返回 (token, user_dict)；登录失败直接抛，避免用例里到处 if。"""
+    def login_ok(self, username: str, password: str) -> LoginResult:
+        """登录并返回 LoginResult；登录失败直接抛，避免用例里到处 if。
+
+        为什么返回值里带上了 `expires_in`（改造前只回 `(token, user)`）：
+        令牌的到期时刻只能由服务端给的 ttl 推出，丢了这个字段，
+        调用方就只能自己猜一个 TTL —— 两端不一致时客户端会以为还有效，
+        于是"偶发 401"又回来了。这里是它唯一的来源，不能丢。
+        """
         resp = self.login(username, password)
         if resp.status_code != 200:
             raise ApiError(f"登录失败：{username} -> {resp.status_code} {resp.text[:300]}")
         body = resp.json()
-        return body["access_token"], body["user"]
+        return LoginResult(token=body["access_token"], expires_in=int(body["expires_in"]), user=body["user"])
+
+    def _provider_for(self, role: str) -> TokenProvider:
+        """给角色造一个令牌来源；`fetch` 闭包每次真去登录一次。
+
+        provider 负责"什么时候该换令牌"，`_fetch` 只负责"怎么登录"，
+        两者分开之后，并发去重、提前刷新这些逻辑就能被单测直接驱动，
+        不需要真的起一个会过期的服务。
+        """
+        username = role_username(role)
+        password = role_password(role)
+        return TokenProvider(lambda: self.login_ok(username, password), name=role)
 
     def as_role(self, role: str) -> RoleClient:
-        """按角色取（并缓存）一个带 token 的客户端视图。"""
+        """按角色取（并缓存）一个带 token 的客户端视图。
+
+        第一次取视图时仍然立刻登录一次：登录失败（账号被停用、口令配错）
+        必须在 `as_role()` 这一行就暴露出来，而不是推迟到某条业务请求上
+        变成一句莫名其妙的 401。
+        """
         if role not in self._roles:
-            username = role_username(role)
-            password = role_password(role)
-            token, user = self.login_ok(username, password)
-            self._roles[role] = RoleClient(self, token, user["username"], user["role"])
+            provider = self._provider_for(role)
+            provider.refresh()
+            user = provider.user
+            assert user is not None  # refresh() 成功后必然有值
+            self._roles[role] = RoleClient(self, provider, user["username"], user["role"])
         return self._roles[role]
 
     # ---------- 断言辅助 ----------

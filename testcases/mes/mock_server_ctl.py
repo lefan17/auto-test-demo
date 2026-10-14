@@ -57,6 +57,7 @@ class MockServer:
         concurrency_window_ms: str = CONCURRENCY_WINDOW_MS,
         reset: bool = True,
         log_path: Path | None = None,
+        extra_env: dict[str, str] | None = None,
     ):
         self.db_path = Path(db_path)
         self.port = port or free_port()
@@ -65,6 +66,10 @@ class MockServer:
         self.concurrency_window_ms = concurrency_window_ms
         self.reset = reset
         self.log_path = Path(log_path) if log_path else None
+        # 要透传给 Mock 进程的环境变量（如 MOCK_TOKEN_TTL）。
+        # 为什么需要这个参数而不是靠测试进程的 os.environ：会话级服务只起一次，
+        # 而 TTL 这类参数必须"每个服务实例各自不同"，共用一个全局环境变量做不到。
+        self.extra_env = extra_env
         self.proc: subprocess.Popen | None = None
 
     # ---------- 生命周期 ----------
@@ -92,7 +97,15 @@ class MockServer:
         # 用 PIPE 之外的方式收集日志：不能接管道读，否则子进程写满缓冲区会卡死
         # （Windows 上 pip/pytest 的输出管道问题在本机反复出现过）。
         self._log_file = open(self.log_path, "w", encoding="utf-8") if self.log_path else subprocess.DEVNULL
-        env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(PROJECT_ROOT)}
+        # extra_env 排在最后：调用方要覆盖某个变量（例如把 MOCK_TOKEN_TTL 调短
+        # 来制造过期令牌）时能盖住从测试进程继承来的值。TTL 是 Mock 进程启动时
+        # 读进模块级常量的，服务起来之后改环境变量无效，只能在启动这一刻传进去。
+        env = {
+            **os.environ,
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": str(PROJECT_ROOT),
+            **(self.extra_env or {}),
+        }
         self.proc = subprocess.Popen(
             cmd,
             cwd=str(PROJECT_ROOT),
