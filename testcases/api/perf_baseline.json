@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-14T15:47:31+00:00",
+  "generated_by": "UPDATE_PERF_BASELINE=1 pytest -m perf",
+  "environment": {
+    "sut": "mock_server（本地 FastAPI + SQLite，非公网）",
+    "sut_host": "http://127.0.0.1:12990",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+    "cpu_count": 16,
+    "samples_per_endpoint": 100,
+    "warmup_discarded": 10,
+    "percentile_method": "nearest-rank",
+    "threshold_rule": "baseline_p95 × 3.0 + 10.0ms"
+  },
+  "endpoints": {
+    "GET /healthz": {
+      "p50_ms": 2.3203999996185303,
+      "p95_ms": 2.789900064468384,
+      "p99_ms": 2.93149995803833,
+      "max_ms": 2.9538999795913696,
+      "mean_ms": 2.2473329985141755,
+      "samples": 100
+    },
+    "GET /materials?page_size=20": {
+      "p50_ms": 5.330700039863586,
+      "p95_ms": 6.577400088310242,
+      "p99_ms": 6.896600008010864,
+      "max_ms": 7.401700019836426,
+      "mean_ms": 5.228127009868622,
+      "samples": 100
+    },
+    "GET /materials/MAT-CU-001": {
+      "p50_ms": 3.1741000413894653,
+      "p95_ms": 3.9450000524520874,
+      "p99_ms": 4.146299958229065,
+      "max_ms": 4.218999981880188,
+      "mean_ms": 3.187570997476578,
+      "samples": 100
+    },
+    "GET /inventory/stock": {
+      "p50_ms": 3.4201000928878784,
+      "p95_ms": 4.41759991645813,
+      "p99_ms": 4.633599877357483,
+      "max_ms": 4.698099970817566,
+      "mean_ms": 3.4356989991664886,
+      "samples": 100
+    },
+    "GET /work-orders?page_size=20": {
+      "p50_ms": 3.2930999994277954,
+      "p95_ms": 4.414199948310852,
+      "p99_ms": 4.7743000984191895,
+      "max_ms": 4.976899862289429,
+      "mean_ms": 3.357206997871399,
+      "samples": 100
+    },
+    "GET /inventory/ledger": {
+      "p50_ms": 3.0812000036239624,
+      "p95_ms": 4.271000027656555,
+      "p99_ms": 4.688100099563599,
+      "max_ms": 4.799399971961975,
+      "mean_ms": 3.1460580015182495,
+      "samples": 100
+    }
+  }
+}
