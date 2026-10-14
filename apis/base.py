@@ -7,8 +7,13 @@
 """
 
 import logging
+import math
 import os
+import random
 import time
+from collections.abc import Callable
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
 
 import allure
@@ -32,14 +37,42 @@ IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 # 加了功能却默认不生效，是最难发现的那种坏。
 REAUTH_EXTRA_ATTEMPTS = 1
 
+# 指数退避的基数：第 attempt 次重试等 RETRY_BACKOFF_BASE_SECONDS * 2**attempt 秒。
+RETRY_BACKOFF_BASE_SECONDS = 0.5
+
+# 退避抖动的上界比例：实际等待落在 [base, base * (1 + ratio)] 这个闭区间里。
+# 为什么要抖动：并发用例会在同一刻撞上 429，没有抖动时它们会在同一刻醒来、
+# 再一起撞上去，限流窗口反而被持续打满——「退避」变成了「同步重试」。
+# 为什么只加不减（而不是 base * uniform(1-ratio, 1+ratio)）：等待下界不能低于
+# 改造前的 0.5s、1s，否则这次改动会悄悄变成对服务端加压。
+RETRY_BACKOFF_JITTER_RATIO = 0.25
+
+# 单次重试等待的硬上限。没有上限时，一个回 `Retry-After: 3600` 的限流响应
+# 会把整条用例挂住一小时——服务端给的等待时长是替它自己算的，不是替「跑一次
+# 回归」算的。默认取 30s 的理由：单次请求的 timeout 默认 15s，等待超过两个
+# timeout 之后，对端要么已经恢复、要么这条用例本来就该红，再等只是把失败往后拖。
+# 可用环境变量 API_MAX_RETRY_WAIT（秒）覆盖，给「服务端确实需要长窗口」的场景留口子。
+DEFAULT_MAX_RETRY_WAIT = 30.0
+
 
 class BaseApi:
-    def __init__(self, base_url: str, timeout: int = None, retries: int = None):
+    def __init__(self, base_url: str, timeout: int = None, retries: int = None, max_retry_wait: float | None = None):
         self.base_url = base_url.rstrip("/")
         # 环境和用例的优先级：显式传参 > 环境变量 > 默认值。
         # 让别人不改进代码就能调：MAX_RESPONSE_MS 管断言阈值，这两个管传输层。
         self.timeout = timeout or int(os.getenv("API_TIMEOUT", "15"))
         self.retries = retries if retries is not None else int(os.getenv("API_RETRIES", "2"))
+        self.max_retry_wait = (
+            max_retry_wait
+            if max_retry_wait is not None
+            else float(os.getenv("API_MAX_RETRY_WAIT", DEFAULT_MAX_RETRY_WAIT))
+        )
+        # 等待、时钟与随机数都做成实例属性，而不是在调用点直接写 time.sleep()：
+        # 测试要断言「等了多久」，而真的等下去会让一条用例从毫秒变成秒级。
+        # 为什么不用 monkeypatch 打补丁 time.sleep 这个全局：那是进程级的，
+        # 一旦有测试忘了还原，"生产行为被静默改短"就成了一件没人能发现的事。
+        self._sleep: Callable[[float], None] = time.sleep
+        self._rng = random.Random()
         self.session = requests.Session()
         # 会话级默认请求头；每条请求可通过 headers= 覆盖
         self.session.headers.update({"Content-Type": "application/json"})
@@ -59,6 +92,69 @@ class BaseApi:
         # POST：只在被限流时重试。限流意味着请求根本没被处理，重放是安全的；
         # 而 5xx 时服务端可能已经落库了，重放会造重复数据。
         return method == "POST" and response.status_code == 429
+
+    def _retry_after_seconds(self, response) -> float | None:
+        """读 `Retry-After` 头并换算成秒；头缺失或读不懂时返回 None（交由退避兜底）。
+
+        两种格式都要支持（RFC 9110 §10.2.3）：delta-seconds（`Retry-After: 2`）
+        与 HTTP-date（`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`）。
+        返回值 0.0 是合法的，意思是"服务端说现在就能重试"（见下面的日期分支）。
+
+        为什么用 `parsedate_to_datetime` 而不是自己写格式化：HTTP-date 有
+        IMF-fixdate / RFC 850 / asctime 三种历史格式，`email.utils` 三种都认，
+        自己写只会漏掉后两种——而漏掉的后果是"默默退回退避"，没人会注意到。
+        """
+        raw = response.headers.get("Retry-After") if response.headers else None
+        # 非字符串一律当作没有这个头：headers 可能来自测试桩或被中间层改写，
+        # 让一个类型不对的值把整条请求炸掉，比退避重试糟糕得多。
+        if not isinstance(raw, str):
+            return None
+        value = raw.strip()
+        if not value:
+            return None
+        is_date = False
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            # 不是数字，那就按 HTTP-date 试一次。两个都读不懂才算非法。
+            try:
+                when = parsedate_to_datetime(value)
+            except (TypeError, ValueError):
+                return None
+            if when is None:
+                return None
+            is_date = True
+            # 没有时区的日期按 UTC 解释：HTTP-date 本来就该带 GMT，
+            # 但服务端漏了后缀时若按本地时区算，会凭空多出 8 小时等待（本机是 UTC+8）。
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            seconds = (when - datetime.now(timezone.utc)).total_seconds()
+        # NaN/Inf 会让后面所有的比较都变成 False，一路穿过 cap 检查，最后变成
+        # `sleep(nan)`；这种头读不懂，退回退避。
+        if not math.isfinite(seconds):
+            return None
+        if seconds <= 0:
+            # 两种"非正数"性质不同，所以处理也不同：
+            # 负的 delta-seconds（如 `-1`）是服务端给了个不合规的数值，我们读不懂它，
+            # 退回自己的退避更安全；而过去时刻的 HTTP-date 是标准允许的表述
+            # ——"不早于这一刻重试"，既然已经过了，就是立刻可以重试，返回 0.0。
+            return 0.0 if is_date else None
+        return seconds
+
+    def _retry_wait(self, attempt: int, response=None) -> float:
+        """算出这次重试该等多久：优先服务器给的 `Retry-After`，否则退避 + 抖动。
+
+        传输失败时 `response` 是 None，没有头可读，走退避。
+        """
+        wait = self._retry_after_seconds(response) if response is not None else None
+        if wait is None:
+            wait = RETRY_BACKOFF_BASE_SECONDS * (2**attempt)
+            # 抖动只往上加，且区间有界：这样「等多久」这件事是可断言的
+            # （见 tools/check_retry.py 的闭区间用例），而不是只能靠猜。
+            wait *= 1 + self._rng.uniform(0, RETRY_BACKOFF_JITTER_RATIO)
+        # 上限对两条路径都生效：`Retry-After: 3600` 和 attempt 涨上去后的退避
+        # 都会撞上它。截断而不是抛异常——被限流时多等一会儿仍然比直接失败好。
+        return min(wait, self.max_retry_wait)
 
     def request(self, method: str, path: str, **kwargs) -> requests.Response:
         url = path if path.startswith("http") else f"{self.base_url}/{path.lstrip('/')}"
@@ -112,7 +208,8 @@ class BaseApi:
                 last_error = exc
                 logger.warning("<-- %s %s 传输失败(%d/%d): %s", method, url, attempt + 1, self.retries + 1, exc)
                 if attempt < self.retries:
-                    time.sleep(0.5 * (2**attempt))  # 退避 0.5s、1s
+                    # 传输失败时没有响应头，只能走退避（基数 0.5s，抖动，带上限）
+                    self._sleep(self._retry_wait(attempt))
                     retried = True
                     continue
                 raise
@@ -144,7 +241,9 @@ class BaseApi:
                     attempt + 1,
                     self.retries + 1,
                 )
-                time.sleep(0.5 * (2**attempt))
+                # 这里的 response 可能就是 429：服务端给的 `Retry-After` 优先于
+                # 我们自己算的退避，它比我们更清楚窗口什么时候开。
+                self._sleep(self._retry_wait(attempt, response))
                 retried = True
                 continue
 
