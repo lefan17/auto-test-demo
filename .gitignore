@@ -12,6 +12,9 @@ report.html
 allure-results/
 allure-report/
 .coverage
+# 覆盖率分片（波 2）：.coveragerc 里开了 parallel = true，每个进程各写一份
+# `.coverage.<主机>.<pid>.X<随机>`，只忽略 `.coverage` 会漏掉整批分片。
+.coverage.*
 htmlcov/
 test-results/
 testcases/ui/artifacts/
