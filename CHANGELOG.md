@@ -67,6 +67,37 @@
   且 CI 的 `pytest -m api -n 4 --dist loadfile` 会在 4 核 runner 上与其它 worker 抢 CPU，
   采样被压慢的倍率无从得知）。详见
   `docs/wave3-perf-baseline-handoff.md` 的「未验证项清单」。
+### 新增 —— 分层门禁策略显式化（波 3）
+
+这一批改动的主题是：**把「哪个测试层阻塞、哪一步放行」从 workflow 里的 `continue-on-error` 行搬进文档，并让它可机器校验。**
+
+- **`docs/质量门禁策略.md`（新增）**：逐条写明全部 9 个 marker 与 6 个 job 的
+  **触发时机 → 是否阻塞 → 失败找谁 → 预算时长 → 依据**，并承接波 2 的 `flaky` / `quarantine` 处置策略。
+  文档里额外说清了两件只靠读 workflow 看不出来的事：
+  ①`smoke` / `regression` / `flaky` 是**横切标签而不是测试层**，它们标中的 36 / 64 / 33 条用例
+  全部落在 `api` / `mes` / `ui` 三个宿主层内（子集探测 outside = 0），所以 CI 里**没有** `-m smoke` 之类的 step；
+  ②`contract` 的 224 条**完全在宿主层之外**，因此必须有独立的 step。
+- **UI 不阻塞的理由、风险与退出条件写足了（`docs/质量门禁策略.md` 第六节）**：
+  现状只有一句"外部因素多"。展开为三条归因理由（失败归因不可靠 / 无可复现环境 / 耗时与不稳定互相放大）、
+  三类风险（静默腐烂、覆盖停止生长、报告靠自觉），以及**三条可判定的退出条件**——
+  A 改为本地站点即立即改；B 近 20 次 CI 的 UI step 非代码原因失败 ≤ 1 次；
+  C 站点改版表现为确定的契约失败。并列出改阻塞时要同步改的四处。
+- **`scripts/check_gate_policy.py`（新增）**：读 `pytest.ini` 的 markers、`.github/workflows/test.yml` 的
+  job / `timeout-minutes` / `continue-on-error`、以及策略文档三段 `<!-- gate-policy:... -->` 表格，
+  做四项双向校验：job 集合、阻塞性与超时、放行步骤清单、marker 归属，任一条对不上退出 1。
+  **纯标准库**（不 import PyYAML）：这份 workflow 只有 job/step 两层结构，而 YAML 1.1 会把顶格的
+  `on:` 解析成布尔 `True`、还得为此写补偿代码；缩进扫描更直白，也让脚本零依赖。
+  实测两种解析方式对 6 个 job 的 timeout 与豁免点判定**完全一致**。
+- **反向验证有红证**：实验 A 只把 `security` 改名成 `security-scan` 而不动文档 → 脚本报 4 项不一致、
+  exit=1；实验 B 只删掉 UI 那步的 `continue-on-error: true` 而不动文档 → 脚本报 2 项不一致、exit=1。
+  两次实验后 `git checkout` 还原，正常态复跑 exit=0。
+- **`pre-commit` job 里接上了这一步（只加严）**：工作流只新增一步 `python scripts/check_gate_policy.py`，
+  没有任何现有 job 从阻塞被改成非阻塞。
+- **`pytest.ini` 只补注释**（marker 名单与 `addopts` 语义逐字节不变）：指明各 marker 的归属文档、
+  以及「新增/改名 marker 必须同时改策略文档，否则 CI 红」。
+- **`README.md` / `CONTRIBUTING.md` 收敛到单一真值**：README 的 job 表与 flaky 段改为指向策略文档；
+  `CONTRIBUTING.md` 原文把 job 名与 marker 名混用（"`mes` / `login` 是阻塞的"其实是 job 名与 marker 名各说一半）、
+  且漏掉 `pre-commit` / `commit-convention`，现已改为以策略文档为准并给出准确的 6 job 速览。
 
 ### 新增 —— 认证层与契约驱动（波 1）
 
