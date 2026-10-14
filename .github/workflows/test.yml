@@ -388,9 +388,13 @@ jobs:
   # "任何人的 PR 都过不去"，最后一定是有人把它删掉。
   # 正确做法是让它红并**通知到人**，由人决定升级还是接受风险。
   #
-  # 本机无法验证这一步：pip-audit 与 pre-commit 都需要创建虚拟环境，
+  # 本机无法验证这一步：`pip-audit -r <file>` 与 pre-commit 都需要创建虚拟环境，
   # 而本机沙箱拒绝 ensurepip（PermissionError: [WinError 5]）。
-  # 故本步骤**仅 CI 可验证**，本地从未执行过。
+  # 但 `pip-audit --local` 无需建 venv，本机可跑（实测报出 21 个已知漏洞 / 7 个包）。
+  # 另一个已修的独立缺陷：`-r` 读含中文注释的 requirements*.txt 时，
+  # 内嵌的 pip_requirements_parser 会回退到 cp936 而抛 UnicodeDecodeError；
+  # 已通过给文件补 PEP263 首行声明修复。
+  # 故本步骤（`-r requirements.lock`）**仅 CI 可验证**。
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 15
