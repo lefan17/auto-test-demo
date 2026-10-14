@@ -38,6 +38,13 @@ dist/
 .DS_Store
 Thumbs.db
 
+# 本地口令文件：`common/secrets.py` 会读它来覆盖本地 Mock 默认口令。
+# 它按定义就是"不进版本库的真实口令"，必须忽略；入库的是 .env.example 模板。
+# 同时忽略常见的手滑变体（.env.local 等），避免"只忽略了主文件"这种漏。
+.env
+.env.*
+!.env.example
+
 # pytest 的 basetemp 残留目录：若落在仓库根目录，会因 ACL 不可读导致 ruff panic
 pytest-of-*/
 

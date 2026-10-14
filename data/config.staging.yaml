@@ -11,16 +11,19 @@ base:
   api: "https://api.staging.invalid"
   ui: "https://web.staging.invalid"
 
+# 口令同样不写明文：`${VAR}` 由 common/config.py 读取时展开，
+# 值走 common/secrets.py（环境变量优先）。CI 上从 secret 注入即可，
+# 不需要为了换口令改这个文件。
 user:
   valid:
     username: "standard_user"
-    password: "secret_sauce"
+    password: "${UI_PASSWORD}"
   locked:
     username: "locked_out_user"
-    password: "secret_sauce"
+    password: "${UI_PASSWORD}"
   invalid:
     username: "wrong_user"
-    password: "wrong_password"
+    password: "${UI_WRONG_PASSWORD}"
 
 data:
   # staging 是共享环境，数据量通常比本地 dev 大得多，这个期望值一定要按环境实测后改。

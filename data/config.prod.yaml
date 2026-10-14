@@ -25,7 +25,9 @@ user:
     password: ""
   invalid:
     username: "wrong_user"
-    password: "wrong_password"
+    # 这里的值是「故意错误的口令」，用来验证登录失败路径；
+    # 仍然不写明文，走 common/config.py 的 `${VAR}` 展开。
+    password: "${UI_WRONG_PASSWORD}"
 
 data:
   expected_user_count: 0

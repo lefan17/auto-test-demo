@@ -19,13 +19,27 @@ IDE 里点运行）。环境变量对调用方式零依赖；命令行参数则�
 默认路径下多出一个文件里没有的键，会让"配置来自文件"这句话变得不精确，
 也可能碰上按文件内容做等值比较的代码。分层靠**文件不同**来表达，
 不靠往数据里注入标记。
+
+为什么配置文件里可以写 `${UI_PASSWORD}` 这样的引用：
+配置文件决定**结构**（哪个环境有哪些账号、地址是什么），口令的值不该由它决定。
+写死明文的结果是"改一次测试口令要动三个 YAML 并发一次版"，更糟的是
+生产库口令会顺着手滑进版本库。展开在**读取时**做一次，取值统一走
+`common/secrets.py`（环境变量优先，本地 Mock 有默认值），因此：
+`TEST_ENV` 未设置时展开后的结果与改造前读到的明文逐字节一致
+（这是 CONTRIBUTING.md 写明的硬约束，改造时已用 JSON 对比复核）。
 """
 
 from __future__ import annotations
 
 import os
+import re
 
+from common.secrets import secret
 from common.yaml_util import load_yaml
+
+# 只认 `${NAME}` 这一种写法。刻意不支持 `${NAME:-默认值}`、`$NAME` 等变体：
+# 语法越丰富，配置文件就越像一门小语言，读的人得先去查解析规则。
+PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 # profile 名 -> data/ 目录下的文件名。
 # dev 复用既有 config.yaml，不制造第二份内容相同的档案（重复的档案必然漂移）。
@@ -44,9 +58,25 @@ def resolve_profile() -> str:
 
 
 def get_config(profile: str | None = None) -> dict:
-    """读取当前环境档案的配置。profile 显式传入时优先于环境变量。"""
+    """读取当前环境档案的配置，并把 `${VAR}` 引用展开成实际口令。profile 显式传入时优先于环境变量。"""
     name = _normalize(profile) if profile is not None else resolve_profile()
-    return load_yaml(PROFILE_FILES[name])
+    return expand_placeholders(load_yaml(PROFILE_FILES[name]))
+
+
+def expand_placeholders(node):
+    """递归展开配置里的 `${VAR}` 引用。
+
+    为什么连 dict 的 key 也展开：配置里目前只有值用到了引用，
+    但只展开值会留下一个隐蔽的坑 —— 有人把引用写到 key 上时，
+    它不会报错，只是安静地不生效。两边都走同一条规则更难写错。
+    """
+    if isinstance(node, dict):
+        return {expand_placeholders(k): expand_placeholders(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [expand_placeholders(item) for item in node]
+    if isinstance(node, str):
+        return PLACEHOLDER_RE.sub(lambda m: secret(m.group(1)), node)
+    return node
 
 
 def _normalize(raw: str) -> str:

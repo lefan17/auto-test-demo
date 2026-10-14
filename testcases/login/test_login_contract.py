@@ -144,7 +144,7 @@ def test_lc06_to_lc13_missing_fields_400(login_api, payload, case):
         ("123456 ", "LC-17 【FIND-03】密码不 trim，末尾空格视为不同密码"),
     ],
 )
-def test_lc14_to_lc17_wrong_password_401(login_api, password, case):
+def test_lc14_to_lc17_rejected_password_401(login_api, password, case):
     """LC-14~LC-17 密码不对 -> 401。
 
     LC-17 是 FIND-03 的证据：用户名做了 trim 而密码没有，

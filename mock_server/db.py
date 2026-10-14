@@ -21,6 +21,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+from common.secrets import role_password, role_username
 from mock_server.errors import BizError
 
 DEFAULT_DB_NAME = "dsh_mes.db"
@@ -174,13 +175,32 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 );
 """
 
-SEED_USERS = [
-    # (username, password, role, display_name)
-    ("admin", "admin123", "ADMIN", "系统管理员"),
-    ("planner01", "plan123", "PLANNER", "计划员-张工"),
-    ("operator01", "op123", "OPERATOR", "产线操作员-李工"),
-    ("operator02", "op123", "OPERATOR", "产线操作员-王工"),
-    ("qa01", "qa123", "QA", "质检员-陈工"),
+# 展示名不是秘密，也不参与鉴权，原样留在这里。
+_SEED_DISPLAY_NAMES = {
+    "ADMIN": "系统管理员",
+    "PLANNER": "计划员-张工",
+    "OPERATOR": "产线操作员-李工",
+    "OPERATOR2": "产线操作员-王工",
+    "QA": "质检员-陈工",
+}
+
+# 种子账号的口令**不在这里写死**，而是从 common/secrets.py 取（环境变量优先，
+# 未设置时回落到本地 Mock 默认值）。为什么必须和 apis/mes_api.py 同源：
+# 改造前两处各写了一份明文清单，改了一边就会出现"种子入库 A、用例拿 B 登录"
+# 的诡异 401，而报错指向的是用例、不是配置 —— 两处定义必然漂移。
+# 这里的顺序决定 users 表的自增 id，不要重排（用例里已有依赖固定 id 的断言）。
+# 元组是 (本地账号键, 库里的角色)：OPERATOR2 只是"第二个操作员账号"的本地别名，
+# 它在库里的角色仍是 OPERATOR（users 表的 CHECK 约束只认 security.ROLES 那四个）。
+SEED_USER_ROLES: list[tuple[str, str]] = [
+    ("ADMIN", "ADMIN"),
+    ("PLANNER", "PLANNER"),
+    ("OPERATOR", "OPERATOR"),
+    ("OPERATOR2", "OPERATOR"),
+    ("QA", "QA"),
+]
+
+SEED_USERS: list[tuple[str, str, str, str]] = [
+    (role_username(key), role_password(key), db_role, _SEED_DISPLAY_NAMES[key]) for key, db_role in SEED_USER_ROLES
 ]
 
 SEED_MATERIALS = [

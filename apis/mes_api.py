@@ -17,15 +17,9 @@ import json
 from typing import Any
 
 from apis.base import BaseApi
+from common.secrets import ROLE_ACCOUNTS, role_password, role_username
 
-# 角色 -> 种子账号（与 mock_server/db.py 的 SEED_USERS 一致）
-ROLE_ACCOUNTS: dict[str, tuple[str, str]] = {
-    "ADMIN": ("admin", "admin123"),
-    "PLANNER": ("planner01", "plan123"),
-    "OPERATOR": ("operator01", "op123"),
-    "OPERATOR2": ("operator02", "op123"),
-    "QA": ("qa01", "qa123"),
-}
+__all__ = ["ROLE_ACCOUNTS", "ApiError", "MesApi", "RoleClient"]
 
 # 幂等键请求头。真实网关（Kong/APISIX/Nginx 插件）也是这个头名。
 IDEMPOTENCY_HEADER = "Idempotency-Key"
@@ -101,7 +95,8 @@ class MesApi(BaseApi):
     def as_role(self, role: str) -> RoleClient:
         """按角色取（并缓存）一个带 token 的客户端视图。"""
         if role not in self._roles:
-            username, password = ROLE_ACCOUNTS[role]
+            username = role_username(role)
+            password = role_password(role)
             token, user = self.login_ok(username, password)
             self._roles[role] = RoleClient(self, token, user["username"], user["role"])
         return self._roles[role]

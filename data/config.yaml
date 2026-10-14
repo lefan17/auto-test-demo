@@ -8,16 +8,19 @@ base:
   # 这样"超时和重试"只有一个真实来源，不会 YAML 改了一套、代码里跑着另一套。
 
 # UI 测试账号（saucedemo 是公开练习站）
+# 口令不写在这里：`${VAR}` 由 common/config.py 在读取时展开，
+# 取值走 common/secrets.py（环境变量优先，本地 Mock 有默认值），
+# 所以改口令不用改配置文件、更不会把口令写进版本库。
 user:
   valid:
     username: "standard_user"
-    password: "secret_sauce"
+    password: "${UI_PASSWORD}"
   locked:
     username: "locked_out_user"
-    password: "secret_sauce"
+    password: "${UI_PASSWORD}"
   invalid:
     username: "wrong_user"
-    password: "wrong_password"
+    password: "${UI_WRONG_PASSWORD}"
 
 # 被测数据的期望值：这些数字随环境变，所以放在配置里而不是写死在断言里。
 # 换到公司内网（可能有 5000 条用户）时只改这里，不用动用例。
