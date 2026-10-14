@@ -3,8 +3,11 @@ import pytest
 from common.assert_util import assert_field_equals, assert_json_schema, assert_status_code
 from common.data_util import load_json
 from data.schemas import POST_SCHEMA
+from testcases.api.flaky_policy import NETWORK_FLAKY
 
-pytestmark = [pytest.mark.api, pytest.mark.regression]
+# NETWORK_FLAKY：这个文件打公网 jsonplaceholder，会撞上 502/429 抖动。
+# 它只在**抖动指纹**上重跑一次，契约类断言（字段、schema）红了照样当场硬失败。
+pytestmark = [pytest.mark.api, pytest.mark.regression, NETWORK_FLAKY]
 
 # 用例开始就加载数据文件：数据驱动，用例逻辑不含具体数据
 USER_DATA = load_json("users.json")

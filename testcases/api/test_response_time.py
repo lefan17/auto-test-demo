@@ -3,8 +3,9 @@ import os
 import pytest
 
 from common.assert_util import assert_status_code
+from testcases.api.flaky_policy import NETWORK_FLAKY
 
-pytestmark = pytest.mark.api
+pytestmark = [pytest.mark.api, NETWORK_FLAKY]
 
 
 def test_response_time_should_be_acceptable(user_api):

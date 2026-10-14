@@ -4,8 +4,9 @@ import pytest
 
 from common.assert_util import assert_field_equals, assert_json_schema, assert_status_code
 from data.schemas import USER_CREATED_SCHEMA, USER_SCHEMA
+from testcases.api.flaky_policy import NETWORK_FLAKY
 
-pytestmark = [pytest.mark.api, pytest.mark.smoke]
+pytestmark = [pytest.mark.api, pytest.mark.smoke, NETWORK_FLAKY]
 
 
 @pytest.mark.parametrize(
