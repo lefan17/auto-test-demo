@@ -133,6 +133,10 @@ pytest -m api -n 4 --dist loadfile --cov=. --cov-report=term --cov-report= --cov
 > `python scripts/flaky_report.py --markdown` 把账本转成两份周报清单——CI 的 step summary
 > 里贴的就是它。`quarantine` 当前 0 条；主门禁里被隔离的用例是 **deselect 而不是判为通过**，
 > 且清单会逐条打印（静默丢弃是另一种死亡方式）。
+>
+> 这两个标签的**完整处置策略**（谁在什么时候跑、红了找谁、退出条件）写在
+> [`docs/质量门禁策略.md`](docs/质量门禁策略.md) 第五、六节；那份文档与 workflow 的一致性
+> 由 `python scripts/check_gate_policy.py` 机器校验。
 
 ### 切换环境档案
 
@@ -541,13 +545,18 @@ python -m pytest -m perf -s
 
 推送到 `main`、开 PR、手动点按钮，以及**每周一凌晨的定时回归**都会触发。共 **6 个 job**：
 
+**每个 job 的阻塞性、每个测试层的触发时机与预算时长，以 [`docs/质量门禁策略.md`](docs/质量门禁策略.md) 为准**——
+那份文档不是说明文，是门禁的一部分：`python scripts/check_gate_policy.py` 会拿本文档里的 job 表、
+`continue-on-error` 放行清单、marker 归属表，与 `.github/workflows/test.yml` 和 `pytest.ini` 逐条对照，
+分叉就红（这一步在 `pre-commit` job 里跑）。下表是速览：
+
 | job | 做什么 | 失败会拦流水线吗 |
 |---|---|---|
 | `lint` | `ruff check .` + `ruff format --check .`（规则全部来自仓库根的 `ruff.toml`） | ✅ 拦 |
 | `typecheck` | `python -m mypy`（配置来自 `pyproject.toml`） | ✅ 拦 |
 | `test` | 先做契约漂移门禁 → 契约属性测试 → 再跑四组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约）→ 汇总 flaky 治理账本 + 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
 | `security` | `pip-audit --requirement requirements.lock --strict` | ❌ 不拦（见下） |
-| `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂 | ✅ 拦 |
+| `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂；再跑 `scripts/check_gate_policy.py` 校验门禁策略没腐烂 | ✅ 拦 |
 | `commit-convention` | 拿最近 30 条真实提交跑 `scripts/check_commit_msg.py` | ✅ 拦（逐条警告，不聚合） |
 
 报告在 Actions 页面的 Artifacts 里下载（`allure-report`），失败截图在 `ui-screenshots`。
@@ -561,7 +570,10 @@ python -m pytest -m perf -s
   但在此之前没有任何地方执行它——**写在配置里的规矩，不执行就等于没有规矩。**
 - **UI 用例标了 `continue-on-error`**：它们打的是公共 demo 站，外部因素多。
   但失败不阻断流水线 ≠ 可以不管——报告和截图照样产出，需要人去看。
-  真实项目里这个开关要慎用，它很容易变成"红灯没人管"的起点。
+  **完整的理由、风险与退出条件写在 [`docs/质量门禁策略.md`](docs/质量门禁策略.md) 第六节**：
+  不是"因为外部因素多"就完了，那里列了三类具体风险（静默腐烂、覆盖停止生长、报告靠自觉）
+  和三条可判定的退出条件（改为本地站点 / 近 20 次 CI 失败率 ≤ 5% 且可归因 / 站点改版表现为确定的契约失败），
+  以及改成阻塞时要同步改的四处。真实项目里这个开关要慎用，它很容易变成"红灯没人管"的起点。
 - **`security` 非阻塞**：pip-audit 查的是**公共漏洞库的当前状态**，而不是这份代码的质量。
   今天全绿、明天可能因为某个传递依赖被披露了 CVE 而变红，那与本次提交毫无关系。
   设成阻塞等于让"上游披露漏洞"变成"任何人的 PR 都过不去"，最后一定是有人把它删掉。

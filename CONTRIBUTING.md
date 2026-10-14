@@ -125,8 +125,11 @@ python scripts/check_commit_msg.py .git/COMMIT_EDITMSG
 - PR 描述按 `.github/PULL_REQUEST_TEMPLATE.md` 填。**"怎么验证的"这一栏不要留空**——
   写清你实际跑过的命令与输出，"应该没问题"不算验证。
 - 涉及 `testcases/**` 断言改动的，PR 里必须说明**为什么改的是用例而不是实现**。
-- CI 必须全绿才能合并。其中 `lint` / `typecheck` / `mes` / `login` 是阻塞的；
-  `-m ui` 与 `security`（pip-audit）非阻塞，但红了要有人看。
+- CI 必须全绿才能合并。**哪些阻塞、哪些只警告，以 [`docs/质量门禁策略.md`](docs/质量门禁策略.md)
+  为准**——那份文档与 `.github/workflows/test.yml` 由 `python scripts/check_gate_policy.py`
+  逐条机器校验，改了 workflow 不改文档会红。一句话版：6 个 job 里 `lint` / `typecheck` /
+  `pre-commit` / `commit-convention` 全阻塞，`test` 只放行 UI 那一步，`security`（pip-audit）
+  整体非阻塞，但红了要有人看。
 
 ---
 
