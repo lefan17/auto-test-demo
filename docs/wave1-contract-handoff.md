@@ -193,7 +193,7 @@ docs/openapi-login_app.json   2129 字节
   - 空表单 → **500** `{"code":"INTERNAL_ERROR","message":"服务内部错误","detail":{"exception":"AssertionError"}}`
 - **机制（已定位到行）**：`routers.py:83` 的签名是 `body: dict = Body(default_factory=dict)`，FastAPI 在**进入函数体之前**就做请求体校验，非 JSON 内容体一律先在 `body` 上炸成 422 `dict_type`，根本走不到 `routers.py:86` 的 `if "application/x-www-form-urlencoded" in content_type` 分支；只有 body 为空时才进入函数体走到 `request.form()`，而此时环境里没装 `python-multipart`（实测 `importlib.metadata.version('python-multipart')` → `PackageNotFoundError`）→ `AssertionError: The python-multipart library must be installed to use form parsing.` → 全局兜底 handler 转成 500。服务端日志已确认该 AssertionError 出现 2 次，栈顶为 `starlette/requests.py:255 in _get_form`。
 - **为什么是服务的问题**：用的是标准 `urllib` 发标准 urlencoded 表单，不是畸形请求；服务自己的文档白纸黑字承诺了这个能力。
-- **钉住位置**：`test_contract_export.py::test_declared_form_login_returns_token`（xfail strict=True）+ 两个现状取证用例 `test_form_login_currently_returns_422`、`test_empty_form_login_currently_returns_500`
+- **钉住位置**：`test_contract_export.py::test_declared_form_login_returns_token`（xfail strict=True）+ 三个现状取证用例 `test_login_description_claims_form_support`、`test_declared_form_login_is_actually_rejected`、`test_empty_form_login_returns_500`
 
 ### DEF-04：手写契约的 400/401 语义在自动导出里丢失
 
@@ -212,8 +212,19 @@ docs/openapi-login_app.json   2129 字节
 - **实际**：**500** `{"code":"INTERNAL_ERROR","message":"服务内部错误","detail":{"exception":"InvalidOperation"}}`
 - **机制（已定位到行）**：`mock_server/quantity.py:49` 的 `Decimal(str(value))` 对 `'INFINITY'`/`'NaN'`/`'1e999999'` **能构造成功**（不抛 `InvalidOperation`），真正的异常发生在 `quantity.py:53` 的 `dec.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)`；而 `try/except (InvalidOperation, ValueError)` 只包住了第 49 行的构造，`quantize` 在 try 之外 → 异常穿透到 `mock_server/app.py` 的兜底 `Exception` handler → 500。
 - **为什么是服务的问题**：这是输入校验的**漏网分支**，不是「服务确实想返回 500」。同一函数对 `'abc'` 能正确回 422，说明作者意图是「非法数字 → 422」，只是非有限值是 `Decimal` 能接受、`quantize` 才炸的一类特例。
-- **钉住位置**：`test_schemathesis_properties.py::test_non_finite_decimal_literal_is_rejected_as_422`（xfail strict=True）+ 取证用例 `test_non_finite_decimal_literal_currently_returns_500`（断言现状是 500）
-- **注意**：这个缺陷是 schemathesis 的**负向生成**扫出来的（hypothesis 生成了 `'INFINITY'` 这类字面量），属于属性测试真正的收获 —— 手写用例基本不可能覆盖到。属性套件里有一条对应的定向分类逻辑（`spec_contract.py:275-313`，`is_non_finite_literal_case()`），把「踩中 DEF-05 的 500」单独记账，不算新信号，避免每次跑都被同一颗地雷刷屏。
+- **钉住位置（已随修复更新，见 §10.1）**：本条**已在波 1 收口时修好，不再是 xfail**。现在由三条**正常**用例固化：`test_schemathesis_properties.py::test_non_finite_decimal_literal_is_rejected_as_422`（6 组参数化，断言 422 + `code=VALIDATION_ERROR` + 出错字段名）、`test_non_finite_decimal_parser_contract`（不经 HTTP，直接钉住 `parse_qty` / `parse_qty_allow_zero` / `parse_cent` 三个函数都不漏）、以及负向用例里「任何 5xx 一律失败」的硬断言。
+- **注意**：这个缺陷是 schemathesis 的**负向生成**扫出来的（hypothesis 生成了 `'INFINITY'` 这类字面量），属于属性测试真正的收获 —— 手写用例基本不可能覆盖到。
+- **同时删掉了修复前的补偿机制**：修好之前，属性套件里有一套定向分类逻辑（`spec_contract.py` 的 `NON_FINITE_LITERAL` 正则 + `contains_non_finite_literal()` + `case_contains_non_finite_literal()`，以及负向用例里的 `known_defect` 记账），作用是「输入照发、响应照看，但踩中 DEF-05 的 500 不算新信号」，避免每次跑都被同一颗地雷刷屏。**修复后这整套补偿逻辑已从代码里删除**（`spec_contract.py` 不再 `import re`），正向与负向两条路径都不再有任何「已知缺陷」豁免 —— 现在任何 5xx 都会让用例失败。这正是任务书要求的「不许为了让套件变绿而在正向路径加宽泛的已知缺陷分类」。
+
+### DEF-06：超大 `page` 打穿 SQLite INTEGER（500 而非 400）
+
+- **method + path**：`GET /api/v1/inventory/ledger?page=461168601842738792`（同类还有 `GET /api/v1/materials`、`GET /api/v1/work-orders`、`GET /api/v1/inventory/stock` 等所有走 `get_pagination` 的列表端点）
+- **期望**：页码超出可寻址范围 → 400，与既有 `page < 1 → 400 PAGINATION_OUT_OF_RANGE` 同类同码
+- **实际**：**500** `{"code":"INTERNAL_ERROR","message":"服务内部错误","detail":{"exception":"OverflowError"}}`
+- **机制（已定位到行）**：`mock_server/deps.py` 的 `page: int = Query(default=1)` **只有下界没有上界**，`Pagination.offset = (page - 1) * page_size` 一旦超过 SQLite 的有符号 64 位 INTEGER（`2**63 - 1`），sqlite3 抛 `OverflowError: Python int too large to convert to SQLite INTEGER`；该异常不属于 `BizError`，逃到 `mock_server/app.py` 的兜底 `Exception` handler → 500。
+- **为什么是服务的问题**：这纯粹是**输入范围**问题，服务端本可以在拼 offset 之前就算出来并拒掉，没有任何理由让数据库驱动的溢出异常变成 500。同一依赖函数对 `page=0` 已经会正确回 400，说明作者意图是「页码不合法 → 400」，只是漏了上界。
+- **钉住位置（收口时已修，见 §10.2）**：`test_schemathesis_properties.py::test_out_of_range_pagination_is_rejected_not_500`（正常用例，4 组参数化）、`test_pagination_boundary_is_where_sqlite_integer_ends`（不经 HTTP 直接钉住边界**位置**，防止界被改小/改大）、以及 `test_contract_export.py` 里既有的 `page=0 → 400` 断言（防止修法把下界行为改回归）。
+- **注意**：这条是**把样本量从默认 8 放大到 50** 才暴露的 —— 默认规模下 hypothesis 抽不到这么大的页码。这正是「默认快、可环境变量放大」这套配置的价值所在。
 
 ### 缺陷与用例的对应关系（防止有人误删）
 
@@ -224,9 +235,10 @@ docs/openapi-login_app.json   2129 字节
 | DEF-02b | `test_contract_export.py::test_reachable_error_status_is_declared_in_spec` | xfail strict ×6 |
 | DEF-03 | `test_contract_export.py::test_declared_form_login_returns_token` | xfail strict |
 | DEF-04 | `test_handwritten_parity.py::test_auto_export_documents_declared_login_status` | xfail strict ×2 |
-| DEF-05 | `test_schemathesis_properties.py::test_non_finite_decimal_literal_is_rejected_as_422` | xfail strict |
+| DEF-05 | `test_schemathesis_properties.py::test_non_finite_decimal_literal_is_rejected_as_422` | **正常用例**（收口时已修，见 §10.1） |
+| DEF-06 | `test_schemathesis_properties.py::test_out_of_range_pagination_is_rejected_not_500` | **正常用例**（收口时已修，见 §10.2） |
 
-共 12 条 xfail(strict=True)。全部带明确 reason 并指向本文件。**没有一条用 skip 掩盖。**
+DEF-01/02a/02b/03/04 共 **11 条** `xfail(strict=True)`，全部带明确 reason 并指向本文件。**没有一条用 skip 掩盖。** 这 5 类都是「spec 的机器可读声明」与「实现/文档」之间的错配，修它们要动的是 FastAPI 的能力边界或导出策略，不属于本轮「关掉服务端崩溃」的范围，故保持原样。
 
 ---
 
@@ -425,8 +437,227 @@ colorama==0.4.6
 2. **`README.md` / `CHANGELOG.md` 未改**（任务书禁改），建议原文见 §8。
 3. **`requirements.lock` 未重建**（约束是「只准写进 requirements.txt」），见 §8.5。
 4. **`pyproject.toml` 的 mypy 基线债登记是我的判断，请复核**。事实是：改动前 `mypy` 就报 `apis/base.py:111-112` 两行 `attr-defined`，在 691cb04 的独立 worktree 上可完全复现。我按任务书「债按现有 overrides 风格登记，不要 ignore_errors」加了一条 overrides。如果整合者认为「基线本来就不绿、不该由本次改动登记」，删掉 pyproject.toml 里债 1b 那段即可，届时 `mypy` 会回到 2 个错误（与本任务改动无关）。
-5. **DEF-05 的「正确行为应该是 422」是我的推断**，不是服务端明文承诺的。依据是同一函数 `parse_qty` 对 `'abc'` 会回 422（同一文件 `quantity.py:46-51` 的意图明显是「非法数字 → ValidationFailed」）。这个推断写在 xfail 的 reason 里，若整合者不认可，可把该用例降级为「记录现状」（保留 500 的取证用例，去掉 `test_..._are_rejected_as_422`）。
+5. **DEF-05 的「正确行为应该是 422」是我的推断**，不是服务端明文承诺的。依据是同一函数 `parse_qty` 对 `'abc'` 会回 422（同一文件 `quantity.py:46-51` 的意图明显是「非法数字 → ValidationFailed」）。**该推断已在波 1 收口时被采纳并落地为修复**（见 §10.1），不再是「记录现状」；如果整合者仍不认可，回退 `mock_server/quantity.py` 的那三处 `is_finite()` 判断即可，届时对应用例会从「断言 422」退回红灯。
 6. **`testcases/contract/spec_contract.py` 的 `REQUIRED_ACTIONS`（26 条）与 `PERMISSIONS`（16 条）是我手工从 `mock_server/routers.py` 与 `security.py` 抄过来的**，不是自动推导的。有一条护栏用例 `test_every_operation_is_covered_by_the_fact_table` 断言 spec 的 operation 集合恰好等于 `REQUIRED_ACTIONS ∪ PUBLIC_OPERATIONS`，所以**新增端点会让它失败**（这是故意的 —— 提醒补表），但**权限矩阵本身改了不会被自动发现**。若要彻底自动化，可以把 `PERMISSIONS` 改成从 `mock_server.security` 直接 import（本轮没做，是为了让契约测试对被测服务的改动更敏感）。
 7. **属性测试只覆盖了正向/负向生成的少量样本**（默认 8 个 examples），不是穷尽。默认值是按「CI 里不能失控」定的；深挖用 `CONTRACT_FULL=1`。
 8. **没有做 stateful testing**（schemathesis 的 `get_stateful_tests` / links）。mock_server 有状态机（工单状态流转、幂等键、乐观锁），这一层用属性测试能挖出更多东西，本轮受时间边界限制未做。
 9. **未验证在 Linux/CI 上的行为**。全部实测在 Windows + GBK 控制台 + Python 3.12.10 上完成。已知一个平台敏感点：`MockServer` 的 `DEFAULT_PYTHON` 指向 `.venv\Scripts\python.exe`（Windows 路径），在 `w1-contract` 下不存在会回落到 `sys.executable`（实测正常），但整合到原仓库后该路径存在，行为会切换成那个解释器 —— 在 CI 上请确认 `sys.executable` 与 `.venv` 是同一个环境。
+
+---
+
+## 10. 波 1 收口：把契约套件变成确定性门禁（追加节）
+
+本节追加于 7333ba4 之后。**目标不是加功能，而是消灭「随机变红的门禁」**：默认 8 examples 时套件是绿的，但 hypothesis 每次抽的样本不同，样本量一旦放大（`CONTRACT_MAX_EXAMPLES=50`）就会因两条真实的服务端 500 而红。**会随机变红的门禁等于没有门禁**，所以本轮做了三件事：修掉那两处 500、删掉为它们写的豁免机制、把契约用例从「记录现状」改成「断言正确行为」。
+
+### 10.1 DEF-05 修复：非有限十进制字面量 → 422（不再是 500）
+
+**改的文件**：`mock_server/quantity.py`（三处函数：`parse_qty`、`parse_qty_allow_zero`、`parse_cent`）
+
+**改法**：把 `quantize` 收进已有的 `try`，并显式挡掉非有限值。三处都从
+```python
+try:
+    dec = Decimal(str(value))
+except (InvalidOperation, ValueError) as exc:
+    raise ValidationFailed(f"字段 {field} 不是合法数字: {value!r}") from exc
+if dec != dec.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP):
+```
+改成
+```python
+try:
+    dec = Decimal(str(value))
+    if not dec.is_finite():
+        raise ValidationFailed(f"字段 {field} 不是合法数字: {value!r}")
+    quantized = dec.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+except (InvalidOperation, ValueError) as exc:
+    raise ValidationFailed(f"字段 {field} 不是合法数字: {value!r}") from exc
+if dec != quantized:
+```
+`parse_cent` 用 `Decimal("0.01")`、错误措辞是「不是合法金额」，其余同构。
+
+**为什么加 `is_finite()` 这一句而不是只把 `quantize` 挪进 try**：`Decimal("NaN")` 的 `quantize` 会抛 `InvalidOperation`（能被 except 接住），但 `Decimal("NaN") != Decimal("NaN")` 恒为真，若不显式挡住，`NaN` 会一路走到「最多支持 3 位小数」这条**错误措辞**的分支上去 —— 状态码对、语义错。所以显式判定非有限值是必要的，不是冗余。实测覆盖 `INFINITY` / `-INFINITY` / `NaN` / `nan` / `1e999999`。
+
+**实测对照（同一探针脚本，起真服务打 HTTP）**：
+
+修前（`git stash` 掉两个服务端文件 → 纯 7333ba4）：
+```
+DEF-05 reverse qty=INFINITY
+  -> 500 {"code":"INTERNAL_ERROR","message":"服务内部错误","detail":{"exception":"InvalidOperation"}}
+DEF-05 issue qty=1e999999
+  -> 500 {"code":"INTERNAL_ERROR","message":"服务内部错误","detail":{"exception":"InvalidOperation"}}
+DEF-06 page huge
+  -> 500 {"code":"INTERNAL_ERROR","message":"服务内部错误","detail":{"exception":"OverflowError"}}
+```
+修后：
+```
+DEF-05 reverse qty=INFINITY
+  -> 422 {"code":"VALIDATION_ERROR","message":"字段 qty 不是合法数字: 'INFINITY'","detail":null}
+DEF-05 issue qty=1e999999
+  -> 422 {"code":"VALIDATION_ERROR","message":"字段 qty 不是合法数字: '1e999999'","detail":null}
+DEF-06 page huge
+  -> 400 {"code":"PAGINATION_OUT_OF_RANGE","message":"page 过大：page=461168601842738792 × page_size=20 超出可寻址范围，请改用更小的页码","detail":{"page":461168601842738792,"page_size":20,"max_offset":9223372036854775807}}
+```
+
+**契约用例随之改形态**（任务书要求：不许留 xfail 记录已修好的东西）：
+- 删掉「取证 500」用例 `test_non_finite_decimal_literal_returns_500`。
+- 把原来的 strict xfail `test_non_finite_decimal_literal_is_rejected_as_422` 改成**正常用例**，并加强断言：不只看状态码，还断言 `code == "VALIDATION_ERROR"` 且出错字段名出现在 message 里（只断言 422 的话，一个「缺字段」的无关 422 也能让它变绿）。参数从 5 组扩到 6 组（补 `NaN`）。
+- 新增 `test_non_finite_decimal_parser_contract`：不经 HTTP，直接对三个解析函数遍历 5 个非有限字面量断言抛 `ValidationFailed(status=422)`，并断言 `parse_qty("1.500") == 1500` / `parse_qty_allow_zero("0") == 0` / `parse_cent("1.50") == 150` 不受影响（防止修法过宽把合法值也拒了）。**这条是为了防「只修了 `parse_qty` 一个函数」蒙混过关。**
+- **删掉了整套 DEF-05 豁免机制**：`spec_contract.py` 里的 `NON_FINITE_LITERAL` 正则、`contains_non_finite_literal()`、`case_contains_non_finite_literal()` 全部删除（该文件不再 `import re`）；`test_schemathesis_properties.py` 负向用例里的 `known_defect` 记账分支也删除。现在正向与负向两条路径都是「任何 5xx 一律 `raise AssertionError`」，**没有任何宽泛的已知缺陷分类**。
+
+### 10.2 DEF-06 修复：超大 `page` → 400（不再是 500）
+
+**改的文件**：`mock_server/deps.py`
+
+**改法**：新增具名常量，并在拼 offset 之前显式挡回：
+```python
+# SQLite 的 INTEGER 是有符号 64 位。OFFSET 一旦超过这个上限，sqlite3 会抛
+# `OverflowError: Python int too large to convert to SQLite INTEGER`，
+# 该异常不属于 BizError，会一路逃到 app.py 的兜底处理器变成 500 INTERNAL_ERROR。
+# 所以 offset 必须在这一层就被挡成 400，而不是等数据库报错。
+MAX_SQLITE_INTEGER = 2**63 - 1
+```
+```python
+    # page 没有上界时，offset = (page - 1) * page_size 会溢出 SQLite 的 INTEGER，
+    # 由数据库驱动抛出 OverflowError → 500。这里是纯输入范围问题，用 400 挡回去：
+    # 与 page < 1 同类同码，前端拿到的一样是"你这个页码没法用"。
+    offset = (page - 1) * page_size
+    if offset > MAX_SQLITE_INTEGER:
+        raise PaginationOutOfRange(
+            f"page 过大：page={page} × page_size={page_size} 超出可寻址范围，请改用更小的页码",
+            page=page,
+            page_size=page_size,
+            max_offset=MAX_SQLITE_INTEGER,
+        )
+```
+`MAX_SQLITE_INTEGER` 加进了 `__all__`，供用例直接 import 钉边界。
+
+**为什么用 400 + 复用既有 `PaginationOutOfRange`**：与既有的 `page < 1 → 400 PAGINATION_OUT_OF_RANGE` 同类同码，前端不需要为新情况写第二套分支。
+
+**为什么没有给 Query 加 `le`/`ge` 上界（即没有动 spec）**：那会让 FastAPI 在进入依赖之前就把超界变成 422，直接破坏既有的 `page=0 → 400` 断言（`test_contract_export.py` 里已钉住），也会让导出的 `docs/openapi.json` 多出 `maximum` 字段从而触发漂移门禁。**`docs/openapi.json` 与 `docs/openapi-login_app.json` 本轮逐字节未改**（`--check` 输出 `[一致]` 即为证）。
+
+**契约用例**：新增两条正常用例 ——
+- `test_out_of_range_pagination_is_rejected_not_500`：4 组参数化（`page=461168601842738792`、`page=9223372036854775807`、`page=0`、`page_size=1000`），断言 400 且 code 正确。后两组是**回归护栏**，防止修上界时把既有的下界与 page_size 上界行为改坏。
+- `test_pagination_boundary_is_where_sqlite_integer_ends`：不经 HTTP，直接 import `MAX_SQLITE_INTEGER` 与 `get_pagination`，钉住边界的**位置**（`MAX_SQLITE_INTEGER // page_size + 2` 必须拒、`page=1` 仍放行）。这样将来有人把界改小或改大都会被逮到。
+
+### 10.3 顺带修掉的一处「假绿」（本轮自查发现，非任务书要求）
+
+**问题**：补全视图给 operation 补 404 的规则原来是「有 path 占位符 就补」，但实测 `POST /api/v1/inventory/issue` 与 `POST /api/v1/inventory/reverse` 这两个**没有 path 占位符**的端点在请求体引用不存在的实体时也会回 404（`services.py:579` `issue_material` 的 `payload.material_code` 查不到物料、`services.py:586` 同函数的 `(material_code, warehouse)` 无库存记录、`services.py:635` `reverse_material` 同款）。于是 50 examples 下这两条正向用例因 `Received: 404` 而红（`acc2_50_run1`：`POST /api/v1/inventory/reverse`；`acc2_50_run2`：`POST /api/v1/inventory/issue` 与 `reverse` 各一条）。
+
+**这是「我的测试视图不完整」，不是服务缺陷** —— 服务回 404 是对的（实体确实不存在），错的是补全视图没声明这两个端点会 404。
+
+**修法（关键：必须精确，不能用字段名判定）**：新增显式端点表，逐条注明抛点出处：
+```python
+NOT_FOUND_FROM_BODY_REQUEST = frozenset(
+    {
+        "POST /api/v1/inventory/issue",
+        "POST /api/v1/inventory/reverse",
+    }
+)
+```
+`build_test_view()` 的 404 条件从 `if has_path_param:` 改为 `if has_path_param or op_id in NOT_FOUND_FROM_BODY_REQUEST:`。
+
+**为什么不能用「body 里有 material_code 就补 404」这种字段名规则**：`POST /api/v1/materials` 的 body 里同样有 `material_code`，但 `create_material` **只做重名校验**（400 `MATERIAL_CODE_DUPLICATE`），从不查存在性、**不会 404**。按字段名判定会给这个端点也发一张「通吃 404 的免死金牌」，恰好盖住真正该报的「本该 400/422 却回 404」这类回归。所以规则必须是**显式端点表**，而且要有用例钉住它没有多、没有少：
+- `test_404_enrichment_set_equals_expected_signature`：断言补全视图里声明了 404 的端点集合**恰好等于**「有 path 占位符 ∪ `NOT_FOUND_FROM_BODY_REQUEST`」（多了少了都报错）。
+- `test_body_sourced_404_table_excludes_create_material`：反例守卫，断言 `POST /api/v1/materials` **不在**表里，且表内容恰好是那两个端点。
+- `test_body_sourced_404_endpoints_really_return_404`：起真服务对表里每个端点复现 404 + `code == "NOT_FOUND"`（证据，不是从代码读出来的推断）。
+- `test_create_material_with_unknown_code_is_not_404`：反向行为证据，`POST /api/v1/materials` 传全新编码不会 404。
+
+### 10.4 收口后的验收实测（全部在**当前字节**上重跑）
+
+前置：每条命令前 `Remove-Item .hypothesis -Recurse -Force`；环境 `PYTHONPATH=<pylibs>`、`TMP/TEMP=<work>\_tmp`、`MAX_RESPONSE_MS=8000`；解释器 `C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`。
+
+**验收 1 —— 默认样本量，连跑 3 次**
+```
+run1 exit=0 | ======== 213 passed, 130 deselected, 11 xfailed, 4 warnings in 24.73s =========
+run2 exit=0 | ======== 213 passed, 130 deselected, 11 xfailed, 4 warnings in 24.37s =========
+run3 exit=0 | ======== 213 passed, 130 deselected, 11 xfailed, 4 warnings in 23.99s =========
+```
+
+**验收 2 —— `CONTRACT_MAX_EXAMPLES=50`，连跑 2 次**
+```
+run1 exit=0 | ======== 213 passed, 130 deselected, 11 xfailed, 4 warnings in 58.71s =========
+run2 exit=0 | === 213 passed, 130 deselected, 11 xfailed, 4 warnings in 60.99s (0:01:00) ====
+```
+
+**验收 3 —— 漂移门禁**
+```
+exit=0
+[一致] C:\Users\lefan\DSH_project\接口自动化_3\work\w1-fixup\docs\openapi.json（80867 字节）
+[一致] C:\Users\lefan\DSH_project\接口自动化_3\work\w1-fixup\docs\openapi-login_app.json（2129 字节）
+```
+
+**验收 4 —— `-m 'not ui'`**
+```
+exit=0
+========= 329 passed, 14 deselected, 11 xfailed, 4 warnings in 57.13s =========
+```
+
+**验收 5 —— api / mes / login**
+```
+api:   exit=0 | ====================== 116 passed, 4 warnings in 18.48s =======================
+mes:   exit=0 | =============== 54 passed, 300 deselected, 1 warning in 22.89s ================
+login: exit=0 | ================ 29 passed, 325 deselected, 1 warning in 2.28s ================
+```
+（api 里打的公网 `https://jsonplaceholder.typicode.com` 本轮可达，116 全过，无需单独重跑证明。）
+
+**验收 6 —— ruff / mypy**
+```
+ruff check:            exit=0  All checks passed!
+ruff format --check:   exit=0  81 files already formatted
+mypy:                  exit=0  Success: no issues found in 65 source files
+```
+
+**收集总数**：`354 tests collected in 0.89s`；同机的 7333ba4 基线为 `345 tests collected in 0.85s`（`git stash` 掉本节 4 个改动文件后实测），**净增 9 条** = 404 精确签名护栏 4 条 + DEF-05 的 parser 契约 1 条 + DEF-06 的边界位置 1 条 + DEF-05 参数化扩 1 组 + DEF-06 参数化 4 组 − 删掉的 DEF-05 取证 500 用例 1 条。另有 2 条用例由 xfail 转为正常。
+
+**唯一 warning 恒为**（来自 schemathesis 自身，与本轮改动无关）：
+```
+C:\...\work\pylibs\schemathesis\generation\coverage.py:305: DeprecationWarning: jsonschema.exceptions.RefResolutionError is deprecated as of version 4.18.0.
+```
+
+**修前红 → 修后绿对照（同一命令 `CONTRACT_MAX_EXAMPLES=50 pytest -m contract -q`，均在删 `.hypothesis` 后）**
+
+修前（`git stash` 掉全部 4 个改动文件 → 纯 7333ba4，即本轮任务书的起点）：
+```
+= 1 failed, 202 passed, 130 deselected, 12 xfailed, 4 warnings in 71.40s (0:01:11) =
+FAILED testcases/contract/test_schemathesis_properties.py::test_positive_cases_conform_to_spec[GET /api/v1/work-orders]
+```
+
+该失败的报错原文（DEF-06）：
+```
+E       schemathesis.exceptions.CheckFailed:
+E       1. Server error
+E       2. Undocumented HTTP status code
+E           Received: 500
+E       [500] Internal Server Error:
+E           `{"code":"INTERNAL_ERROR","message":"服务内部错误","detail":{"exception":"OverflowError"}}`
+E           curl -X GET -H 'Authorization: [Filtered]' 'http://127.0.0.1:5780/api/v1/work-orders?page=461168601842738792'
+testcases\contract\test_schemathesis_properties.py:178: CheckFailed
+```
+
+修前同一批文件下、DEF-05 的 xfail 原文（证明当时它确实是 500）：
+```
+XFAIL testcases/contract/test_schemathesis_properties.py::test_non_finite_decimal_literal_is_rejected_as_422 - DEF-05：mock_server/quantity.py:49 ... 正确行为应是 422（输入格式问题）。见 handoff「真实缺陷清单」DEF-05。
+```
+
+修后（当前字节，见验收 2）：`213 passed, 11 xfailed, 0 failed`。
+
+**注意一个「非确定性」的事实**：修前连跑会红在不同端点/不同请求上 —— 一次是 `GET /api/v1/materials?page=461168601842738792`（`before_50.log`，OverflowError），一次是 `GET /api/v1/work-orders?page=461168601842738792`（`baseline_50_full.log`，同一 OverflowError），50 examples 中途的两轮则是 `POST /api/v1/inventory/issue` / `reverse` 的 404（`acc2_50_run1/2`，即 §10.3）。这正是「随机变红的门禁」的实证：**同一份代码，红在不同地方**。
+
+### 10.5 本节改动的文件与提交范围
+
+| 文件 | 改动 |
+| --- | --- |
+| `mock_server/quantity.py` | 三处解析函数加 `is_finite()` 判定 + 把 `quantize` 收进 `try`（DEF-05） |
+| `mock_server/deps.py` | 新增 `MAX_SQLITE_INTEGER`，`get_pagination` 加 offset 上界 → 400 `PAGINATION_OUT_OF_RANGE`（DEF-06），并导出该常量 |
+| `testcases/contract/spec_contract.py` | 404 补全规则从「有 path 占位符」扩为「∪ 显式端点表」；新增 `NOT_FOUND_FROM_BODY_REQUEST`；**删除**整套 DEF-05 豁免逻辑（`NON_FINITE_LITERAL` / `contains_non_finite_literal` / `case_contains_non_finite_literal`，不再 `import re`） |
+| `testcases/contract/test_schemathesis_properties.py` | DEF-05 由「取证 500 + strict xfail」改为正常用例断言 422（并加 `test_non_finite_decimal_parser_contract`）；新增 DEF-06 两条用例；新增 404 精确签名护栏 4 条；**删除**负向用例里的 `known_defect` 豁免分支 |
+| `docs/wave1-contract-handoff.md` | 本节；并同步修正 §6 的 DEF-05 描述与 §6 末的「缺陷与用例对应关系」表 |
+| `docs/openapi.json`、`docs/openapi-login_app.json` | **未改**（`--check` 输出 `[一致]`，门禁仍有效） |
+
+**保持不动的 strict xfail**：DEF-01、DEF-02a、DEF-02b(×6)、DEF-03、DEF-04(×2)，共 **11 条**。这 5 类都是 spec 的机器可读声明与实现/文档的错配，豁免依然成立。
+
+### 10.6 本节未做到 / 不确定
+
+1. **§10.3 的 404 端点表仍是手工维护的**。我用 4 条用例（含 2 条真服务复现）钉住了它**现在**是精确的，但如果将来 `services.py` 里新增一处「请求体引用实体查不到」的 404 抛点，补全视图不会自动跟上，会重新出现 50 examples 下的红色。彻底的做法是从 `services.py` 的抛点做静态分析或直接跑覆盖率探针，本轮没做。
+2. **`MAX_SQLITE_INTEGER` 这个界的依据是「SQLite INTEGER 是有符号 64 位」**，未在 Windows 以外的 SQLite 构建上验证；也未验证「offset 恰好等于上限时确实能查询成功」（用例只钉了 `page=1` 放行与超界拒绝，未对边界值本身发起真查询 —— 因为那需要库里真有一个能寻址到那么远的表，构造成本高）。
+3. **验收 2 只跑了 2 次 ×50 examples**。属性测试的绿灯是「这么多样本没找到反例」，不是证明。若要更高的确定性，需要 `CONTRACT_FULL=1` 或更长的 CI nightly。
+4. **本轮没有改动任何 CI 文件**（任务书禁改）。§8.1 里「把 `python scripts/export_openapi.py --check` 加进 `.github/workflows/test.yml`」这条建议**依然待整合者落地**，且现在多了一条同样重要的待办：CI 跑 `-m contract` 时若想覆盖 DEF-06 这类「只有放大样本量才暴露」的缺陷，需要在 nightly 或专门的 job 里带 `CONTRACT_MAX_EXAMPLES=50`，默认 job 保持 8 以保证耗时可控（实测 8→50 是 24s→60s，约 2.5 倍）。
