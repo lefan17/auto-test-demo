@@ -1,0 +1,62 @@
+{
+  "info": {
+    "title": "AgentTest Demo — 登录服务",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/flaky": {
+      "get": {
+        "description": "约 10% 概率 503：模拟不稳定服务，用来验证框架的重试与代理回退。\n\n原 demo_app 里就有这个端点，一并保留 —— 它是\"重试策略真的有用\"的\n现场证据，而不是 README 里的一句声明。",
+        "operationId": "flaky_api_flaky_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Flaky"
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Health Api Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/api/login": {
+      "post": {
+        "description": "登录。返回 200 / 400 / 401 三种结果。\n\n读请求体的顺序刻意保留\"先 JSON、退回表单\"：\n- JSON 解析失败时 FastAPI 默认会直接抛 422，而契约要求 400。\n  所以这里**手动解析**而不是用 pydantic 模型 —— 一旦交给 pydantic，\n  \"缺字段\"会变成 422 而不是契约里的 400，用例会红在框架行为上，\n  而不是红在我们要验证的业务逻辑上。\n- 非 JSON 请求体（如 text/plain）也必须落到 400，见 LC-29。",
+        "operationId": "login_api_login_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Login"
+      }
+    }
+  }
+}
