@@ -123,7 +123,7 @@ jobs:
 
       # Allure 命令行本身是个 Java 程序，需要 JRE 才能生成报告
       - name: 安装 JDK 17（Allure 命令行依赖）
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
