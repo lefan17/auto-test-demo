@@ -12,6 +12,62 @@
 
 ## [未发布]
 
+### 新增 —— 性能基线回归（波 3 · P2-2）
+
+病灶：`testcases/api/test_response_time.py` 只有 2 条、且**没有基线**，唯一的时间断言是
+「**单次**请求 `elapsed_ms < MAX_RESPONSE_MS`」，打的是公网 `jsonplaceholder`。
+一次请求的耗时是纯噪声，公网链路又不可控 —— 这个门禁既没有分辨力，也没有可比性。
+
+- **`testcases/api/perf_baseline.json`（新增）**：把 P95 落成入仓基线。6 个只读端点
+  （`/healthz`、`/materials`、`/materials/{code}`、`/inventory/stock`、`/work-orders`、
+  `/inventory/ledger`）各采 **100 次**、丢弃前 **10 次**预热，记录
+  P50/P95/P99/max/mean/samples 与采集环境指纹（平台/CPU/Python/分位方法/阈值公式）。
+  **文件里没有一个手编数字**，全部来自一次真实采集。
+- **`testcases/api/perf_baseline.py`（新增，331 行）**：纯逻辑层——nearest-rank 分位、
+  基线读写、阈值判定、diff 渲染。不 import pytest、不起服务，所以门禁用例与重采入口用的是
+  **同一份**判定实现（两份实现迟早飘掉，而门禁飘掉是不报错的）。
+  用 nearest-rank 而非线性插值：N=100 时插值会给出一个**从未真实发生过**的延迟值
+  （例如第 94.5 个样本），排查回归时「这条 P95 对应哪次请求」必须能当场指出来。
+- **阈值 = `基线 P95 × 3.0 + 10ms`**：倍数吸收跨机器的系统性差异，绝对下限吸收
+  「基线只有几毫秒时倍数放大不出分辨率」。定位说清楚——它拦的是**量级劣化**
+  （漏索引、N+1 查询、同步阻塞变大），不是几毫秒的漂移。要更严调
+  `PERF_P95_FACTOR` / `PERF_P95_FLOOR_MS`，不必改代码。
+- **`testcases/api/test_perf_baseline.py`（新增，2 条）**：基线文件可用性 + P95 预算判定。
+  基线缺端点/缺字段/分位次序颠倒/样本数不足都单独判红 —— 「门禁没了基线」和
+  「门禁发现回归」处置完全不同，必须能分辨。同时打 `api` 与 `perf` 两个标记：
+  前者让它被 `-m api` 这个总门禁自动包含，后者让它能单独跑（并行批次的调度抖动会污染采样）。
+- **`testcases/api/conftest.py`（新增）**：session 级起本地 `mock_server`，**复用**
+  `testcases/mes/mock_server_ctl.MockServer`（含「子进程连的库是否与期望一致」的健康校验，
+  正好挡住「服务没起起来、请求打到别的端口」）。基线**必须**打在本地：同一份代码、同一份
+  种子数据、同一个 SQLite，只有这样「P95 变差了」才指向被测代码。该目录原先没有 conftest.py，
+  且 fixture 无 autouse，对既有 api 用例零影响。
+- **抖动类用例明确切割**：`test_response_time.py` **一字未改**保留（它还能发现代理/证书/DNS
+  这类问题），但新文件 docstring 里写清「它测的是链路、属抖动类、**与基线无关**」。
+  新用例**既不**打 `NETWORK_FLAKY`，失败文案也**刻意避开**「接口响应过慢」——
+  那句话是 `flaky_policy.py` 的重跑指纹，撞上就等于把真回归吸收一次、门禁被悄悄放宽。
+- **显式重采入口**：`UPDATE_PERF_BASELINE=1 python -m pytest -m perf -s`。两条硬约束：
+  只能由一次真实采集写文件；必须打印 `旧值 → 新值`（否则「重新采集」与「悄悄放宽门禁」
+  的输出无法区分）。
+- **`pytest.ini`**：markers 段**追加** `perf` 一条（`--strict-markers` 下不登记会在收集期报错），
+  既有 9 条 marker 一字未动。
+- **验收实测**（都带原始命令与关键输出行，见 `docs/wave3-perf-baseline-handoff.md`）：
+  `pytest -m api` 由改动前 `130 passed` → **`132 passed, 239 deselected`**；
+  **反向验证**把绝对上限设成 1ms → **6 条端点全红**（`Failed: 性能基线回归：...`），
+  撤掉后回到 `2 passed`，证明门禁真的在判；
+  **稳定性**同一梯度重复三次，单端点 P95 轮间波动最大 **1.25x**（把任务期间八次同口径采集一并计入 1.96x），
+  阈值倍数 3.0 对实测最慢 P95 仍留 4 倍以上余量 ⇒ **容差无需调整、门禁不会随机红**；
+  另外补验了两条阈值臂（`PERF_P95_FACTOR` / `PERF_P95_FLOOR_MS`）与「显著变快」提示分支，
+  并在 CI 同款命令 `pytest -m api -n 4 --dist loadfile` 下实测 **132 passed**；
+  `ruff check .` → `All checks passed!`、`ruff format --check .` → `97 files already formatted`、
+  `python -m mypy` → `Success: no issues found in 77 source files`。
+- **零新增依赖**：只用 `requests` + stdlib，`requirements.txt` / `requirements.lock` **未改**。
+  `testcases/mes/`、`testcases/login/`、`testcases/contract/`、`testcases/ui/`、`apis/`、
+  `mock_server/`、`common/`、根 `conftest.py`、`login_app/`、CI workflow **全部未动**。
+- ⚠️ **未验证**：**没有在 Linux runner 上实测**（基线里的环境指纹是 Windows 本机，
+  且 CI 的 `pytest -m api -n 4 --dist loadfile` 会在 4 核 runner 上与其它 worker 抢 CPU，
+  采样被压慢的倍率无从得知）。详见
+  `docs/wave3-perf-baseline-handoff.md` 的「未验证项清单」。
+
 ### 新增 —— 认证层与契约驱动（波 1）
 
 这一批改动的主题是：**把「口令写死在代码里」和「接口契约靠人手抄」这两件企业里最先出事的事处理掉**。

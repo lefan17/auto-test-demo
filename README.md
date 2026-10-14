@@ -229,7 +229,8 @@ pytest --html=report.html --self-contained-html
 |---|---|---|
 | 接口-用户 | 23 | 列表/详情/创建/更新/过滤，状态码、Schema 契约、字段类型、唯一性、邮箱格式、404 异常分支（`test_user_create.py` 12 + `test_user_list.py` 11） |
 | 接口-文章 | 8 | 创建回显、数据驱动、关联过滤、分页参数、更新 |
-| 接口-性能基线 | 2 | 响应时间阈值（可用 `MAX_RESPONSE_MS` 调整）、请求头校验 |
+| 接口-响应时间（抖动类） | 2 | **单次**请求的响应时间阈值（`MAX_RESPONSE_MS`）、请求头校验。打的是**公网** `jsonplaceholder`，测的是链路而非被测服务，**不是性能基线**、与基线无关，仅作连通性冒烟。详见下方「性能基线」 |
+| 接口-性能基线（P95 回归） | 2 | 波 3 新增：对**本地 `mock_server`** 的 6 个只读端点各采 100 次（丢弃前 10 次预热），用 nearest-rank 算 P50/P95/P99 落盘成 `testcases/api/perf_baseline.json`；回归时按 `基线 P95 × 3.0 + 10ms` 判红，显著变快则提示可更新基线。基线可用 `UPDATE_PERF_BASELINE=1` 一键重采并打印旧值→新值 |
 | 接口-重试退避 | 9 | 波 2 新增：`Retry-After` 的 delta-seconds 与 HTTP-date 两种格式、超上限截断、无头回落指数退避，以及 429 + `Retry-After` 的端到端路径（起本地 `http.server`，请求真的过 socket） |
 | flaky 治理元测试 | 5 | 波 2 新增：开真 pytest 子进程验证「标了 flaky 的用例首跑失败会被重跑」「真契约断言红了不被重跑吞掉」「隔离区用例退出主门禁且清单被打印」「隔离区能单独跑」 |
 | UI-登录 | 6 | 登录成功、4 种失败场景（参数化）、退出登录 |
@@ -489,6 +490,52 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
 > ```
 >
 > 换成自己公司的内网接口后，`MAX_RESPONSE_MS` 应收到 200-500ms 才有性能门禁的意义。
+
+## 性能基线（P95 回归）
+
+上一条的 `MAX_RESPONSE_MS` 是「**单次**请求 < 阈值」，跑的是公网：一次请求的耗时是纯噪声，
+换个时段、换条链路数字全变。它是一条连通性冒烟，**不是性能基线**。
+
+波 3 起另有一套真的基线，打在**本地 `mock_server`** 上（同一份代码、同一份种子数据、同一个 SQLite，
+端口系统分配、库在 pytest 临时目录里），因此「P95 变差了」指向被测代码而不是网络：
+
+```powershell
+python -m pytest -m perf           # 只跑性能采样（独占机器，数字最干净）
+python -m pytest -m api            # 接口总门禁；性能基线也带 api 标记，所以会被一起选中
+```
+
+- **基线文件**：`testcases/api/perf_baseline.json`（入仓）。6 个只读端点各采 100 次、丢弃前 10 次预热，
+  用 **nearest-rank** 分位算 P50/P95/P99/max/mean，并记录采集环境指纹（平台/CPU/Python/采样数/分位方法/阈值公式）。
+- **判定**：`基线 P95 × 3.0 + 10.0ms`。倍数吸收跨机器的系统性差异，10ms 下限保证基线只有几毫秒时
+  倍数放大不出分辨率。它拦的是**量级劣化**（漏索引、N+1 查询、同步阻塞变大），不是几毫秒的漂移。
+  实测同一梯度重复采集的轮间波动最大 1.25x（把本轮八次同口径采集一并计入 1.96x），阈值对实测最慢 P95
+  仍留 4 倍以上余量 —— 门禁不会随机红。
+- **显著变快不静默**：实测 P95 < 基线的 0.5 倍时以 **warning** 提示「可更新基线」，而不是悄悄通过
+  （用 warning 而非 print，是因为 `pytest` 默认捕获 stdout，print 等于没提示）。
+- **不判红的对比对象**：`testcases/api/test_response_time.py` 那 2 条打公网的用例保留原样，
+  属抖动类，与基线无关。
+
+传输与阈值参数全部走环境变量，不用改代码：
+
+```powershell
+$env:PERF_SAMPLES = "100"        # 每个端点采样次数（默认 100）
+$env:PERF_WARMUP = "10"          # 丢弃的预热次数（默认 10）
+$env:PERF_P95_FACTOR = "3.0"     # 阈值倍数（默认 3.0，调小=更严）
+$env:PERF_P95_FLOOR_MS = "10"    # 阈值绝对下限毫秒（默认 10）
+$env:PERF_P95_LIMIT_MS = "50"    # 与基线无关的绝对上限；设了取更严的一侧（min）
+$env:PERF_IMPROVE_RATIO = "0.5"  # 低于基线的多少倍时提示可重采
+$env:PERF_BASELINE_FILE = "..."  # 换一个基线文件路径（默认仓库内那个）
+```
+
+**更新基线**必须显式开开关，且只能由一次真实采集写文件（代码里没有任何手编数字的路径）：
+
+```powershell
+$env:UPDATE_PERF_BASELINE = "1"
+python -m pytest -m perf -s
+```
+
+它会打印 `旧值 → 新值` 的 diff，新增/移除端点单独标注。**基线放宽必须留痕**。
+只想看当前基线内容（不采样）：`python testcases/api/perf_baseline.py`（加 `--json` 打全文）。
 
 ## 持续集成
 
