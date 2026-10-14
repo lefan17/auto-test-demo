@@ -1,0 +1,14 @@
+# 覆盖率配置的唯一载荷点。
+#
+# 为什么单独一份 .coveragerc，而不是把配置塞进 pytest.ini 的 addopts：
+#   1. 这份配置的读者不止 pytest。被测服务跑在**子进程**里，那里的 coverage
+#      （pytest-cov 的 COV_CORE_* 通道、coverage 自己的 COVERAGE_PROCESS_START
+#      通道、以及手敲的 `coverage combine/report`）都读这个文件，而 coverage
+#      根本不解析 pytest.ini —— 塞在 pytest.ini 里的配置对子进程一律无效。
+#   2. addopts 是「跑 pytest 这一次」的命令行参数，只能注入给 pytest 自己；
+#      而覆盖率要采集的恰恰是 pytest 之外的那些进程。
+#   3. [run] 段的开关（如 parallel、sigterm）没有对应的命令行选项，只能落配置文件。
+[run]
+# 每个进程各写一份 .coverage.<主机>.<pid>.X<随机> 分片，而不是所有进程去覆盖同一个
+# .coverage。这是子进程覆盖率能落盘的前提：分片互不覆盖，父进程最后 combine 成一份。
+parallel = true

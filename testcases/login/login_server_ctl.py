@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -27,6 +28,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+
+# 服务统一经这层 launcher 启动：它把 uvicorn 关闭时"重发信号"的默认终止动作吸收掉，
+# 让服务进程能正常返回到 atexit —— 覆盖率数据只有走到 atexit 才会落盘。
+# 细节与理由见该脚本的模块注释。
+SERVICE_LAUNCHER = PROJECT_ROOT / "scripts" / "service_launcher.py"
 
 
 class LoginServerError(RuntimeError):
@@ -50,10 +56,13 @@ class LoginServer:
     生命周期完全由测试控制：session 级起一次，session 结束无论成败都 kill。
     """
 
-    def __init__(self, port: int | None = None, log_path: Path | None = None):
+    def __init__(self, port: int | None = None, log_path: Path | None = None, extra_env: dict[str, str] | None = None):
         self.port = port or free_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
         self.log_path = Path(log_path) if log_path else None
+        # 要透传给登录服务进程的环境变量（例如注入 COV_CORE_* 让它自己采覆盖率）。
+        # 与 MockServer 的同名参数一致：让"每个服务实例各自不同"的变量不必挤在全局环境里。
+        self.extra_env = extra_env
         self.proc: subprocess.Popen | None = None
         self._log_file = None
 
@@ -62,7 +71,7 @@ class LoginServer:
         python = os.getenv("LOGIN_PYTHON") or (str(DEFAULT_PYTHON) if DEFAULT_PYTHON.exists() else sys.executable)
         cmd = [
             python,
-            "-m",
+            str(SERVICE_LAUNCHER),
             "login_app.run",
             "--host",
             "127.0.0.1",
@@ -75,7 +84,12 @@ class LoginServer:
         # 日志落文件而不是接管道：子进程写满管道缓冲区会卡死
         # （Windows 上 pip/pytest 的输出管道问题在本机反复出现过）。
         self._log_file = open(self.log_path, "w", encoding="utf-8") if self.log_path else subprocess.DEVNULL
-        env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(PROJECT_ROOT)}
+        env = {
+            **os.environ,
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": str(PROJECT_ROOT),
+            **(self.extra_env or {}),
+        }
         self.proc = subprocess.Popen(
             cmd,
             cwd=str(PROJECT_ROOT),
@@ -129,16 +143,41 @@ class LoginServer:
             return "(无日志)"
         return "\n".join(text.splitlines()[-lines:])
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 10.0) -> None:
+        """先礼后兵地停服务：优雅信号 → terminate → kill。
+
+        为什么不能只留一句 terminate()：Windows 上它是 TerminateProcess，进程没有机会
+        跑 atexit，而覆盖率数据挂在 atexit 上落盘 —— 服务跑了整轮，覆盖率却一行没有。
+        优雅信号在 Windows 上是 CTRL_BREAK_EVENT（子进程以 CREATE_NEW_PROCESS_GROUP 启动
+        才收得到），在 POSIX 上是 SIGTERM；uvicorn 收到后正常关闭，再由
+        scripts/service_launcher.py 吸收它重发的信号，进程从 main() 返回、atexit 执行。
+        优雅退出失败时退回 terminate 再 kill，保证不留下卡住 CI 的僵尸进程。
+        """
         if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+            self._signal_graceful()
             try:
-                self.proc.wait(timeout=10)
+                self.proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=10)
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=timeout)
         if self._log_file is not None and self._log_file is not subprocess.DEVNULL:
             try:
                 self._log_file.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _signal_graceful(self) -> None:
+        """发一个"请正常关闭"的信号。"""
+        if self.proc is None:
+            return
+        # CTRL_BREAK_EVENT 只在 Windows 存在（用 getattr 取，避免在其它平台被静态检查报未定义）。
+        sig = getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM) if os.name == "nt" else signal.SIGTERM
+        try:
+            self.proc.send_signal(sig)
+        except (OSError, ValueError):
+            # 进程刚好已经退出时忽略：下面的 wait() 会拿到它的 returncode。
+            pass

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -22,6 +23,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 API_PREFIX = "/api/v1"
 
+# 服务统一经这层 launcher 启动：它把 uvicorn 关闭时"重发信号"的默认终止动作吸收掉，
+# 让服务进程能正常返回到 atexit —— 覆盖率数据只有走到 atexit 才会落盘。
+# 细节与理由见该脚本的模块注释。
+SERVICE_LAUNCHER = PROJECT_ROOT / "scripts" / "service_launcher.py"
+
 # 服务内部的"并发窗口"：在检查库存/版本与真正写库之间刻意等待的毫秒数。
 # 调大一点是为了让并发用例的竞态**每次都能复现**，而不是靠运气。
 # 生产代码里不存在这个等待，它只在 Mock 服务里，见 mock_server/services.py。
@@ -30,6 +36,30 @@ CONCURRENCY_WINDOW_MS = "300"
 
 class MockServerError(RuntimeError):
     pass
+
+
+def subprocess_coverage_env(data_file: Path, source: str | None = None) -> dict[str, str]:
+    """构造让**被测服务子进程**自己采集覆盖率的 `COV_CORE_*` 环境变量。
+
+    为什么是这三个变量：`pytest-cov.pth`（随 pytest-cov 装在 site-packages）在每个
+    解释器启动时读 `COV_CORE_SOURCE`，命中就 `pytest_cov.embed.init()` 起一个
+    `coverage.Coverage(data_suffix=True, auto_data=True)`。所以只要把它们放进子进程
+    的环境，服务自己就会写分片，不需要 `coverage run` 包一层、也不需要改被测服务。
+
+    为什么 `COV_CORE_CONFIG` 传 `os.pathsep`：这是 embed 约定的"自己去发现配置文件"
+    的哨兵值（`cov_config = True`），子进程 cwd 是仓库根，于是它会读到仓库根的
+    `.coveragerc`。这样 `parallel = true` 这类只能写在配置文件里的开关才有载荷点。
+
+    什么时候需要显式调用：跑 `pytest --cov=...` 时 pytest-cov 已经把这三个变量放进
+    了 `os.environ`，启动服务时自然继承，无需注入；只有在**没有 `--cov`** 的场景
+    （例如 `testcases/mes/test_coverage_collection.py` 自己起服务验证机制）才需要
+    显式注入，且必须把 `data_file` 指到测试自己的临时目录，断言才不会依赖外部环境。
+    """
+    return {
+        "COV_CORE_SOURCE": str(PROJECT_ROOT) if source is None else source,
+        "COV_CORE_CONFIG": os.pathsep,
+        "COV_CORE_DATAFILE": str(Path(data_file).resolve()),
+    }
 
 
 def free_port() -> int:
@@ -46,7 +76,7 @@ def free_port() -> int:
 class MockServer:
     """以子进程方式起停 Mock MES 服务。
 
-    生命周期完全由测试控制：session 级起一次，session 结束无论成败都 kill，
+    生命周期完全由测试控制：session 级起一次，session 结束无论成败都停掉，
     避免 CI 上留下僵尸进程把后续任务卡住（Job 会因为"有子进程还活着"一直不结束）。
     """
 
@@ -77,7 +107,7 @@ class MockServer:
         python = os.getenv("MOCK_PYTHON") or (str(DEFAULT_PYTHON) if DEFAULT_PYTHON.exists() else sys.executable)
         cmd = [
             python,
-            "-m",
+            str(SERVICE_LAUNCHER),
             "mock_server.run",
             "--host",
             "127.0.0.1",
@@ -148,19 +178,46 @@ class MockServer:
             return "(无日志)"
         return "\n".join(text.splitlines()[-lines:])
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 10.0) -> None:
+        """先礼后兵地停服务：优雅信号 → terminate → kill。
+
+        为什么不能只留一句 terminate()：Windows 上它是 TerminateProcess，进程没有机会
+        跑 atexit，而覆盖率数据（pytest-cov 的 COV_CORE_* 通道）恰恰挂在 atexit 上落盘。
+        结果就是服务实打实跑了一整轮，分片文件里却一行数据都没有 —— 这就是覆盖率盲区。
+
+        优雅信号在 Windows 上是 CTRL_BREAK_EVENT（子进程以 CREATE_NEW_PROCESS_GROUP 启动
+        才收得到），在 POSIX 上是 SIGTERM；两条路 uvicorn 都会正常关闭，再由
+        scripts/service_launcher.py 吸收它重发的信号，进程从 main() 返回、atexit 执行。
+        优雅退出失败时退回原地 terminate 再 kill，保证不会留下卡住 CI 的僵尸进程。
+        """
         if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+            self._signal_graceful()
             try:
-                self.proc.wait(timeout=10)
+                self.proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=10)
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=timeout)
         if getattr(self, "_log_file", None) and self._log_file is not subprocess.DEVNULL:
             try:
                 self._log_file.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _signal_graceful(self) -> None:
+        """发一个"请正常关闭"的信号。"""
+        if self.proc is None:
+            return
+        # CTRL_BREAK_EVENT 只在 Windows 存在（用 getattr 取，避免在其它平台被静态检查报未定义）。
+        sig = getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM) if os.name == "nt" else signal.SIGTERM
+        try:
+            self.proc.send_signal(sig)
+        except (OSError, ValueError):
+            # 进程刚好已经退出时忽略：下面的 wait() 会拿到它的 returncode。
+            pass
 
     # ---------- 辅助 ----------
     def base_url_for_tests(self) -> str:
