@@ -36,14 +36,13 @@ from schemathesis.checks import (
     response_schema_conformance,
     status_code_conformance,
 )
-from schemathesis.exceptions import CheckFailed
 from spec_contract import (
+    NOT_FOUND_FROM_BODY_REQUEST,
     PERMISSIONS,
     PRISTINE_SPEC_PATH,
     PUBLIC_OPERATIONS,
     REQUIRED_ACTIONS,
     ROLES,
-    case_contains_non_finite_literal,
     iter_operations,
     load_spec,
     max_examples,
@@ -204,7 +203,6 @@ def test_negative_cases_are_rejected(
         path_parameters=explicit_path_parameters(operation),
     )
     seen: list[int] = []
-    known_defect: list[str] = []
 
     @make_settings(negative_max_examples())
     @given(case=strategy)
@@ -212,20 +210,12 @@ def test_negative_cases_are_rejected(
         case.headers = dict(case.headers or {}, Authorization=f"Bearer {token}")
         response = case.call(base_url=schema.base_url)
         if response.status_code >= 500:
-            # 已知缺陷 DEF-05（非有限十进制字面量 → 500）单独记账，不算新信号。
-            # 其它任何 5xx 一律照常失败。
-            if case_contains_non_finite_literal(case):
-                known_defect.append(response.text[:120])
-                return
             raise AssertionError(f"负向数据打出了 5xx：{response.status_code} {response.text[:200]}")
         if response.status_code >= 400:
             seen.append(response.status_code)
 
     run()
     assert set(seen) <= {400, 401, 403, 404, 409, 422}, sorted(set(seen))
-    if known_defect:
-        # 命中了就留痕：报告里要靠它证明这个豁免不是摆设。
-        print(f"[DEF-05] {op_id} 命中 {len(known_defect)} 次非有限字面量 500：{known_defect[0]}")
 
 
 # ==================== 3. 鉴权属性：无令牌/坏令牌必须 401 ====================
@@ -304,7 +294,12 @@ def test_every_operation_is_covered_by_the_fact_table() -> None:
     assert len(PROTECTED_OPERATIONS) == 26
 
 
-# ==================== 6. DEF-05：非有限十进制字面量打穿服务 ====================
+# ==================== 6. DEF-05 修复后的回归：非有限十进制字面量必须 422 ====================
+# 历史：这组字面量曾让服务回 500 —— Decimal("INFINITY")/Decimal("NaN") 在 CPython 里
+# 能构造成功，而 parse_qty/parse_qty_allow_zero/parse_cent 的 quantize 调用在 try 之外，
+# 抛出的 InvalidOperation 一路逃到 app.py 的兜底处理器（DEF-05）。
+# 修法见 mock_server/quantity.py：把 quantize 收进同一个 try，并显式挡掉非有限值。
+# 因此这里不再需要"取证 500 + strict xfail"这一对，直接断言修好后的正确行为。
 @pytest.mark.parametrize(
     ("method", "path", "body", "field"),
     [
@@ -338,19 +333,23 @@ def test_every_operation_is_covered_by_the_fact_table() -> None:
             {"material_code": "MAT-CU-001", "warehouse": "WH-01", "qty": "1e999999"},
             "qty",
         ),
+        (
+            "POST",
+            "/api/v1/inventory/reverse",
+            {"material_code": "MAT-CU-001", "warehouse": "WH-01", "qty": "NaN"},
+            "qty",
+        ),
     ],
     ids=lambda v: str(v)[:40],
 )
-def test_non_finite_decimal_literal_returns_500(
+def test_non_finite_decimal_literal_is_rejected_as_422(
     contract_base_url: str, admin_token: str, method: str, path: str, body: dict[str, Any], field: str
 ) -> None:
-    """DEF-05 取证：非有限十进制字面量让服务回 500（而不是 422）。
+    """DEF-05 回归：非有限十进制字面量是"输入格式问题"，必须 422 而不是 500。
 
-    这条用例断言的是**现状**（必须 500），所以它现在是 passed。
-    它与下面的 strict-xfail 用例配对：前者防"服务悄悄换了个错法"，
-    后者防"缺陷被修好了却没人回来清理豁免"。
+    断言到 code 与出错字段一级，而不是只看状态码：只断言 422 的话，
+    换成"缺字段"这种无关的 422 也会让用例变绿。
     """
-    del field
     resp = requests.request(
         method,
         concrete_url(contract_base_url, path),
@@ -358,46 +357,151 @@ def test_non_finite_decimal_literal_returns_500(
         headers={"Authorization": f"Bearer {admin_token}"},
         timeout=10,
     )
-    assert resp.status_code == 500, f"{method} {path} {body} 期望 500（DEF-05 现状），实际 {resp.status_code}"
-    assert resp.json()["detail"]["exception"] == "InvalidOperation"
+    assert resp.status_code == 422, f"{method} {path} {body} 期望 422，实际 {resp.status_code} {resp.text[:200]}"
+    payload = resp.json()
+    assert payload["code"] == "VALIDATION_ERROR"
+    assert field in payload["message"], f"{field} 不在错误信息里：{payload['message']}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEF-05：mock_server/quantity.py:49 的 Decimal(str(value)) 对 'INFINITY'/'1e999999' 能构造成功，"
-    "随后的 dec.quantize(...)（quantity.py:53）抛 InvalidOperation，而 except 只接并 (InvalidOperation, ValueError) "
-    "之外的路径——实际是 quantize 在 try 块外，异常逃逸到 app.py 的兜底处理器变成 500。"
-    "正确行为应是 422（输入格式问题）。见 handoff「真实缺陷清单」DEF-05。",
+def test_non_finite_decimal_parser_contract() -> None:
+    """直接钉住解析器本身（不经 HTTP）—— 上面那条走网络，这条走调用，互为补充。
+
+    `parse_qty_allow_zero` 与 `parse_cent` 的同一处缺陷没有单独的 HTTP 入口覆盖到，
+    所以在这里补上，避免"只修了一个函数"这种情况蒙混过关。
+    """
+    from mock_server.errors import ValidationFailed
+    from mock_server.quantity import parse_cent, parse_qty, parse_qty_allow_zero
+
+    for parse in (parse_qty, parse_qty_allow_zero, parse_cent):
+        for literal in ("INFINITY", "-INFINITY", "NaN", "nan", "1e999999"):
+            with pytest.raises(ValidationFailed) as excinfo:
+                parse(literal)
+            assert excinfo.value.status == 422, f"{parse.__name__}({literal!r}) 应是 422"
+    # 正常值不受影响（防止修法过宽把合法数量也拒了）
+    assert parse_qty("1.500") == 1500
+    assert parse_qty_allow_zero("0") == 0
+    assert parse_cent("1.50") == 150
+
+
+# ==================== 7. DEF-06：超大 page 不得打穿 SQLite INTEGER ====================
+# 历史：get_pagination 只校验 page < 1，没有上界。page 足够大时
+# Pagination.offset = (page - 1) * page_size 超过 SQLite 的 64 位 INTEGER，
+# sqlite3 抛 `OverflowError: Python int too large to convert to SQLite INTEGER`，
+# 该异常不是 BizError，逃到 app.py 兜底处理器变成 500（DEF-06）。
+# 修法见 mock_server/deps.py：在拼 offset 之前用 MAX_SQLITE_INTEGER 显式挡住，抛 400。
+@pytest.mark.parametrize(
+    ("query", "code"),
+    [
+        ("page=461168601842738792", "PAGINATION_OUT_OF_RANGE"),  # 手写复现里那个值
+        ("page=9223372036854775807", "PAGINATION_OUT_OF_RANGE"),  # 2**63 - 1，乘以 page_size 后越界
+        ("page=0", "PAGINATION_OUT_OF_RANGE"),  # 既有下界行为不能回归
+        ("page_size=1000", "PAGE_SIZE_INVALID"),  # 既有上界行为不能回归
+    ],
 )
-def test_non_finite_decimal_literal_is_rejected_as_422(contract_base_url: str, admin_token: str) -> None:
-    """缺陷修好后期望：非有限字面量应当 422（与 'NaN' 的现有行为一致）。"""
-    resp = requests.post(
-        f"{contract_base_url}/api/v1/inventory/reverse",
-        json={"material_code": "MAT-CU-001", "warehouse": "WH-01", "qty": "INFINITY"},
+def test_out_of_range_pagination_is_rejected_not_500(
+    contract_base_url: str, admin_token: str, query: str, code: str
+) -> None:
+    """分页越界必须是 400 业务码，而不是 500 —— 对分页参数最全的列表接口逐条断言。"""
+    resp = requests.get(
+        f"{contract_base_url}/api/v1/inventory/ledger?{query}",
         headers={"Authorization": f"Bearer {admin_token}"},
         timeout=10,
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400, f"{query} 期望 400，实际 {resp.status_code} {resp.text[:200]}"
+    assert resp.json()["code"] == code
 
 
-def test_negative_strategy_exception_is_classified_not_swallowed() -> None:
-    """守卫：确保 CheckFailed 与已知缺陷的分类确实生效（防止将来误改成正则放宽）。
+def test_pagination_boundary_is_where_sqlite_integer_ends() -> None:
+    """钉住边界的**位置**，而不只是"越界会 400"。
 
-    这里只断言分类函数本身的行为，不发请求 —— 属性测试的失败分类逻辑太关键，
-    不能被"它反正绿了"含糊过去。
+    offset 恰好不超过 SQLite INTEGER 上限时仍应放行（服务端只承诺可寻址范围）；
+    再往上一步就必须拒。这样将来有人把界改小/改大都会被这条用例逮到。
     """
-    assert CheckFailed is not None
-    assert case_contains_non_finite_literal(_FakeCase(body={"qty": "INFINITY"}))
-    assert case_contains_non_finite_literal(_FakeCase(body={"unit_price": "1e999999"}))
-    assert case_contains_non_finite_literal(_FakeCase(body={"qty": "NaN"}))
-    assert not case_contains_non_finite_literal(_FakeCase(body={"qty": "1.500"}))
-    assert not case_contains_non_finite_literal(_FakeCase(body={"qty": "-1"}))
-    assert not case_contains_non_finite_literal(_FakeCase(body={"remark": "infinity 牌螺钉"}))
-    assert not case_contains_non_finite_literal(_FakeCase(body=None, query={"page": "0"}))
+    from mock_server.deps import MAX_SQLITE_INTEGER, get_pagination
+    from mock_server.errors import BizError
+
+    page_size = 20
+    # (page - 1) * page_size 刚好越过上限的第一个页码
+    boundary_page = MAX_SQLITE_INTEGER // page_size + 2
+
+    assert get_pagination(page=boundary_page - 1, page_size=page_size).offset <= MAX_SQLITE_INTEGER
+    with pytest.raises(BizError) as excinfo:
+        get_pagination(page=boundary_page, page_size=page_size)
+    assert excinfo.value.status == 400
+    assert excinfo.value.code == "PAGINATION_OUT_OF_RANGE"
+    # 下界与 page_size 上界的既有行为不受影响
+    assert get_pagination(page=1, page_size=page_size).offset == 0
 
 
-class _FakeCase:
-    def __init__(self, body: Any = None, query: dict[str, Any] | None = None, path: dict[str, Any] | None = None):
-        self.body = body
-        self.query = query or {}
-        self.path_parameters = path or {}
+# ==================== 8. 补全视图的 404 规则必须是精确签名 ====================
+# 背景：补全视图给 operation 补 404 时，除了"有 path 占位符"，还有一类来源是
+# **请求体引用的实体查不到**（services.py:579/586/635）。若按字段名判定，会误伤
+# POST /api/v1/materials —— 它的 body 里同样有 material_code，但 create_material
+# 只做重名校验（400 MATERIAL_CODE_DUPLICATE），从不查存在性、不会 404。
+# 一旦误伤，正向属性测试就多了一张"通吃 404 的免死金牌"，恰好会盖住真正该报的
+# "本该 400/422 却回 404"这类回归。所以规则用显式端点表，并且在这里钉住它**恰好**
+# 等于预期签名集合。
+def test_404_enrichment_set_equals_expected_signature(test_view: dict[str, Any], pristine_spec: dict[str, Any]) -> None:
+    """补全视图里声明了 404 的端点集合，必须恰好等于「有 path 占位符 ∪ 表内端点」。"""
+    expected = {
+        f"{method} {path}"
+        for method, path, operation in iter_operations(pristine_spec)
+        if any(p.get("in") == "path" for p in operation.get("parameters", []))
+    } | set(NOT_FOUND_FROM_BODY_REQUEST)
+    actual = {
+        f"{method} {path}"
+        for method, path, operation in iter_operations(test_view)
+        if "404" in operation.get("responses", {})
+    }
+    assert actual == expected, f"多出来的：{sorted(actual - expected)}；少掉的：{sorted(expected - actual)}"
+
+
+def test_body_sourced_404_table_excludes_create_material() -> None:
+    """反例守卫：没有 path 占位符、且**不该**声明 404 的端点必须被排除。
+
+    POST /api/v1/materials 是最容易误伤的那个（body 含 material_code）。
+    """
+    assert "POST /api/v1/materials" not in NOT_FOUND_FROM_BODY_REQUEST
+    assert NOT_FOUND_FROM_BODY_REQUEST == {"POST /api/v1/inventory/issue", "POST /api/v1/inventory/reverse"}
+
+
+def test_body_sourced_404_endpoints_really_return_404(contract_base_url: str, admin_token: str) -> None:
+    """表里每个端点都真的能复现 404 —— 证据，不是从代码读出来的推断。"""
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    issue = requests.post(
+        f"{contract_base_url}/api/v1/inventory/issue",
+        json={"material_code": "MAT-NOT-EXIST", "warehouse": "WH-01", "qty": "1.000"},
+        headers=headers,
+        timeout=10,
+    )
+    assert issue.status_code == 404, issue.text[:200]
+    assert issue.json()["code"] == "NOT_FOUND"
+
+    reverse = requests.post(
+        f"{contract_base_url}/api/v1/inventory/reverse",
+        json={"material_code": "MAT-CU-001", "warehouse": "WH-NO-SUCH", "qty": "1.000"},
+        headers=headers,
+        timeout=10,
+    )
+    assert reverse.status_code == 404, reverse.text[:200]
+    assert reverse.json()["code"] == "NOT_FOUND"
+
+
+def test_create_material_with_unknown_code_is_not_404(contract_base_url: str, admin_token: str) -> None:
+    """反例的行为证据：POST /api/v1/materials 传不存在的物料编码，不会是 404。
+
+    detail 里有 material_code 不等于它会去查这个物料是否存在——它只查重名。
+    """
+    resp = requests.post(
+        f"{contract_base_url}/api/v1/materials",
+        json={
+            "material_code": "MAT-BRAND-NEW-001",
+            "name": "x",
+            "category": "c",
+            "unit": "u",
+            "unit_price": "1.00",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+        timeout=10,
+    )
+    assert resp.status_code == 201, resp.text[:200]

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +139,24 @@ ERROR_ENVELOPE: dict[str, Any] = {
     },
 }
 
+# 除路径占位符之外，**唯一**会造成 404 的来源：请求体引用的实体查不到。
+# 这是逐条核对抛点得出的穷举表，不是按字段名猜的——按字段名会误伤
+# POST /api/v1/materials：它的 body 里同样有 material_code，但 create_material
+# 只做重名校验（400 MATERIAL_CODE_DUPLICATE），从不查存在性、不会 404。
+# 逐条出处（函数归属已核对）：
+#   POST /api/v1/inventory/issue    services.py:579 issue_material    payload.material_code 查不到物料
+#                                   services.py:586 issue_material    (material_code, warehouse) 无库存记录
+#   POST /api/v1/inventory/reverse  services.py:635 reverse_material  (material_code, warehouse) 无库存记录
+# 注：services.py:400（report_production 的 payload.batch_no 查不到批次）也是 404，
+# 但 POST /api/v1/work-orders/{order_no}/report 自带路径占位符，已被 has_path_param 覆盖，
+# 列在这里只会造成重复声明。
+NOT_FOUND_FROM_BODY_REQUEST = frozenset(
+    {
+        "POST /api/v1/inventory/issue",
+        "POST /api/v1/inventory/reverse",
+    }
+)
+
 
 def load_spec(path: Path) -> dict[str, Any]:
     """读一份入库 spec。"""
@@ -199,10 +216,11 @@ def build_test_view(spec: dict[str, Any]) -> dict[str, Any]:
     2. 删掉那个 `authorization` header 参数。为什么：它被第 1 条取代后若还留着，
        hypothesis 会给它生成随机值并当成一个"正当参数"来覆盖真实令牌。
     3. 补上服务端全局异常处理器**确实会返回**的状态码：401（受保护端点）、403（需要动作的
-       端点）、400（有请求体或有 query 参数的端点）、404（有 path 参数的端点）、409
-       （请求体含 `version`，即乐观锁）。为什么：这些码由 app.py 的 BizError /
-       StarletteHTTPException 处理器统一产出，FastAPI 生成器看不到，纯净 spec 里
-       一律缺失——那正是被钉住的那个缺陷（见 test_contract_export.py）。
+       端点）、400（有请求体或有 query 参数的端点）、404（有 path 占位符，**或**在
+       `NOT_FOUND_FROM_BODY_REQUEST` 里）、409（请求体含 `version`，即乐观锁）。
+       为什么：这些码由 app.py 的 BizError / StarletteHTTPException 处理器统一产出，FastAPI
+       生成器看不到，纯净 spec 里一律缺失——那正是被钉住的那个缺陷（见 test_contract_export.py）。
+       404 的两个来源都可追溯到具体抛点，见 `NOT_FOUND_FROM_BODY_REQUEST` 上方的逐行出处。
     4. 把自动生成的 422 schema（`HTTPValidationError` = `{detail: 数组}`）换成服务端
        **实际**产出的错误信封。为什么：app.py 的 RequestValidationError 处理器返回
        `{code, message, detail:{errors:[...]}}`，与 HTTPValidationError 不兼容——这是
@@ -255,9 +273,9 @@ def build_test_view(spec: dict[str, Any]) -> dict[str, Any]:
                 "description": "业务校验失败（分页/排序/状态机等）",
                 "content": {"application/json": {"schema": ERROR_ENVELOPE}},
             }
-        if has_path_param:
+        if has_path_param or op_id in NOT_FOUND_FROM_BODY_REQUEST:
             responses["404"] = {
-                "description": "对象不存在",
+                "description": "对象不存在（路径占位符或请求体引用的实体查不到）",
                 "content": {"application/json": {"schema": ERROR_ENVELOPE}},
             }
         if "version" in request_body_properties(view, operation):
@@ -270,47 +288,3 @@ def build_test_view(spec: dict[str, Any]) -> dict[str, Any]:
 
 def roles_allowed(action: str) -> tuple[str, ...]:
     return PERMISSIONS[action]
-
-
-# ==================== DEF-05 的定向分类（不是"关校验"） ====================
-# mock_server/quantity.py:49 用 Decimal(str(value)) 解析数量/金额，但 except 只接
-# (InvalidOperation, ValueError)。Decimal("INFINITY") 在 CPython 里**能构造成功**，
-# 于是 `dec.quantize(...)` 在第 53 行抛 InvalidOperation，逃出 except，被
-# app.py 的兜底处理器变成 500 INTERNAL_ERROR。同样逃逸的还有 1e999999 这类巨指数。
-#
-# 后果：任何字符串形状的数量/金额字段（qty / unit_price / planned_qty / good_qty ...）
-# 只要值是非有限十进制字面量，服务就回 500——这是**服务的缺陷**（DEF-05）。
-# 它由两个用例盯着：
-#   - test_contract_export.py::test_non_finite_literal_returns_500 —— 取证，必须一直 500；
-#   - test_schemathesis_properties.py::test_non_finite_decimal_literal_is_pinned —— strict xfail，
-#     一旦修好就 XPASS 报红，逼人来删这个豁免。
-#
-# 属性测试**照常发送**这些输入，只是把因此产生的失败归类为"已知缺陷"而不是新信号。
-# 这与"过滤掉不生成"有本质区别：输入真的发出去了，响应真的被看了，
-# 只是断言时区分「已知缺陷」和「新问题」——后者一旦出现仍然报红。
-NON_FINITE_LITERAL = re.compile(
-    r"""^[+-]?(
-        inf(inity)?                       # INF / INFINITY / Infinity
-      | nan                               # NaN / nan
-      | \d+(\.\d+)?[eE][+-]?\d{4,}        # 1e999999 这类巨指数
-    )$""",
-    re.VERBOSE | re.IGNORECASE,
-)
-
-
-def contains_non_finite_literal(node: Any) -> bool:
-    """请求载荷里有没有非有限十进制字面量（DEF-05 的触发器）。"""
-    if isinstance(node, str):
-        return bool(NON_FINITE_LITERAL.match(node.strip()))
-    if isinstance(node, dict):
-        return any(contains_non_finite_literal(value) for value in node.values())
-    if isinstance(node, (list, tuple)):
-        return any(contains_non_finite_literal(value) for value in node)
-    return False
-
-
-def case_contains_non_finite_literal(case: Any) -> bool:
-    """判定一个 schemathesis Case 是否踩中 DEF-05（看 body + 全部请求参数）。"""
-    return contains_non_finite_literal(
-        {"body": getattr(case, "body", None), "query": dict(case.query or {}), "path": dict(case.path_parameters or {})}
-    )
