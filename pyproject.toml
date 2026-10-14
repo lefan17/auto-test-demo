@@ -63,8 +63,11 @@ files = [
     "scripts",
 ]
 # 只对**缺少类型标注的第三方库**放行，不对本仓库代码放行。
-# 本仓库 import 的库（requests / yaml / allure / jsonschema）都没有 py.typed 标记，
-# 逐个装 types-* 包会给这个仓库增加 4 个纯为了 mypy 而存在的依赖。
+# 写这段时的前提是「本仓库 import 的库都没有 py.typed 标记」。该前提已被上游打破：
+# requests 2.34 起自带 requests/py.typed（实测 2.32.3、2.33.0 都没有，2.34.2 有），
+# 于是 mypy 开始真的检查 `requests.Response`，apis/base.py 里给响应动态挂的
+# elapsed_ms / was_retried 两个属性立刻被判 [attr-defined]。
+# 处理方式不是装 types-*，而是让那两行不依赖动态挂属性的写法（见 apis/base.py）。
 ignore_missing_imports = true
 
 # 为什么不用 mypy_path 去解决同级 import：

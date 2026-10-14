@@ -12,6 +12,36 @@
 
 ## [未发布]
 
+### 修复 —— 依赖升级暴露的动态属性写法（requests 2.34 自带类型桩）
+
+- **现象**：`dependabot` 的 http-stack 分组 PR（`requests==2.32.3` → `2.34.2`）在 `typecheck` job 变红：
+
+  ```
+  apis/base.py:111: error: "Response" has no attribute "elapsed_ms"  [attr-defined]
+  apis/base.py:112: error: "Response" has no attribute "was_retried"  [attr-defined]
+  Found 2 errors in 1 file (checked 54 source files)
+  ```
+
+- **根因**：`requests` 在 **2.34 首次带上 `py.typed`**（实测 wheel：2.32.3 无、2.33.0 无、2.34.2 有
+  `requests/py.typed`）。此前 mypy 把 `requests` 当无类型库、`Response` 视作 `Any`，动态挂属性不报错；
+  有了类型桩之后这两行被当真检查，而属性**确实不存在**——报得没错，是代码之前占了「没有类型标注」的便宜。
+  本仓库 `pyproject.toml` 的 `ignore_missing_imports` 注释（「本仓库 import 的库都没有 py.typed 标记」）
+  这一前提即由此被上游打破，注释已同步改写。
+- **修法**：`apis/base.py` 改用 `response.__dict__["elapsed_ms"] = elapsed_ms` 写实例字典。
+  为什么不是更常见的两种写法——两者都实测踩过：
+  - 直接 `response.elapsed_ms = ...`：mypy `[attr-defined]` 判红。
+  - `setattr(response, "elapsed_ms", ...)`：mypy 放行，但 **ruff 的 B010** 判红
+    （常量属性名用 `setattr` 并不比直接赋值安全），等于把问题从一把刀挪到另一把刀下。
+  实例字典写法的额外好处是**不动调用方**：`elapsed_ms` / `was_retried` 是
+  `testcases/api/test_response_time.py` 与 `tools/check_retry.py` 依赖的公开接口，
+  换成 dataclass 包装会牵动 30 处调用。
+- **验证**（都在 `requests==2.34.2` 下跑，即 PR #13 的真实条件）：
+  `python -m mypy` → `Success: no issues found in 54 source files`；
+  `python -m ruff check .` → `All checks passed!`；
+  `python -m pytest -q -m "not ui"` → **92 passed, 14 deselected**；
+  `python tools/check_retry.py` → **12/12 通过**（第 11、12 条正是消费 `was_retried` 的检查）。
+  本机 venv 事后回退到 `requests==2.32.3`（与 `requirements.txt` 一致），两种版本下结论相同。
+
 ### 新增 —— 工程化外壳（十项）
 
 这一批改动的主题是：**把已经写在配置里、但从来没有被执行过的规矩真正跑起来**。

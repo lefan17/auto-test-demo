@@ -108,8 +108,15 @@ class BaseApi:
             # 只统计「真正产出这个响应」的那一次请求的耗时。
             # 不能把前面失败/重试的几次累加进去：否则一次成功的重试会因为
             # 把上一次的等待也算进来而误报超时——恢复成功反而判失败，很荒唐。
-            response.elapsed_ms = elapsed_ms
-            response.was_retried = retried
+            # 为什么用 response.__dict__ 而不是 `response.elapsed_ms = ...`：
+            # requests 2.34 起自带 py.typed，mypy 开始真的检查 requests.Response，
+            # 直接挂属性会报 [attr-defined]（属性确实不存在，报得没错）。
+            # 也不用 setattr(response, "elapsed_ms", ...)：ruff 的 B010 会拦
+            # （常量属性名用 setattr 并不比直接赋值安全）。写进实例字典是唯一
+            # 同时被 mypy 与 ruff 接受、且不动调用方的写法——这两个属性是
+            # testcases/api/test_response_time.py 与 tools/check_retry.py 依赖的公开接口。
+            response.__dict__["elapsed_ms"] = elapsed_ms
+            response.__dict__["was_retried"] = retried
             # 打进 Allure 报告：测试报告里能看到每个请求和耗时
             with allure.step(f"{method} {url} -> {response.status_code} ({elapsed_ms:.0f}ms)"):
                 allure.attach(
