@@ -106,6 +106,8 @@ playwright install chromium
 ```powershell
 pytest                      # 全部用例
 pytest -m api               # 只跑接口（快，日常开发用这个）
+pytest -m mes               # 只跑 MES 业务链路（本地 Mock 后端 + SQLite）
+pytest -m contract          # 只跑契约驱动用例（自动导出 spec 的漂移门禁 + 属性测试）
 pytest -m ui                # 只跑 UI（需要浏览器）
 pytest -m login             # 只跑登录契约用例（本地服务，1.3 秒，无需公网）
 pytest -m smoke             # 只跑冒烟
@@ -148,8 +150,8 @@ $env:TEST_ENV = "prod";    pytest -m api     # → data/config.prod.yaml
 > **同时**打公网接口，更容易触发限流——并行度越高越容易出假失败。
 > 在 CI 或内网环境上跑 `-n auto` 是合理的；对着公共练习站跑并行收益有限。
 >
-> **但这里有一个不只是"收益有限"的问题——默认分发在本仓库是坏的，实测会失败：**
-> `pytest -m mes -n 4 --dist load` → **`30 passed, 1 error`，退出码 1**（两次复现均匀一致）。
+> **但这里有一个不只是"收益有限"的问题——默认分发在本仓库曾经是坏的，实测会失败：**
+> （改造前，30 条 MES 用例时）`pytest -m mes -n 4 --dist load` → **`30 passed, 1 error`，退出码 1**。
 > 报错在 teardown 阶段 `testcases/mes/conftest.py:129` 的会话级数据隔离断言：
 > `AssertionError: 会话结束时数据没有回到基线`。
 > 根因不是并发竞态，是**分发策略与 fixture 作用域错配**：
@@ -157,8 +159,43 @@ $env:TEST_ENV = "prod";    pytest -m api     # → data/config.prod.yaml
 > 按用例分发会把同一个文件的用例拆到不同 worker，
 > 于是"A worker 的收尾快照"对不上"B worker 造的脏数据"。
 > 按文件分发（`loadfile`）让一个文件整体落在同一个 worker，作用域闭合，因而干净。
-> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测 26.42s → 12.03s，约 2.2×），
+>
+> ⚠️ **如实登记**：那个 1 error 在现在的用例集下**复现不出来了**
+> （`-m mes -n 4 --dist load` 四次实测 54 passed、退出码 0，13.34~16.57s）。
+> 而 `testcases/mes/` 里与数据隔离、并发相关的文件相对改造前**一个字节都没改**——
+> 也就是说不是被修好的，是分发格局变了之后自己消失了。
+> 复现不出来不等于修好了，所以这一组仍然只开 `loadfile`。
+>
+> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测串行 61.68s → 并行 20.93s，约 2.9×），
 > 而 `-m mes` / `-m login` / `-m ui` **刻意不开**，理由见"持续集成"一节。
+
+### 口令与密钥
+
+口令**不再硬编码在用例里**，全部走 `common/secrets.py` 这一个来源：
+
+```powershell
+# 1. 本地：复制模板后填值（.env 已被 .gitignore 忽略，不会误提交）
+Copy-Item .env.example .env
+
+# 2. 或者用环境变量（优先级高于 .env）
+$env:MES_PASSWORD_ADMIN = "我的本地口令"
+pytest -m mes
+```
+
+三条约定：
+
+1. **种子口令与用例登录口令同源**。`mock_server/db.py` 建库时用哪个口令，
+   用例就用哪个口令——两边取的都是 `common/secrets.py`。所以不会出现
+   "种子入库 A、用例拿 B 登录"这种查半天的 401。
+2. **配置文件里可以写 `${VAR}` 引用**，读取时由 `common/config.py` 的
+   `expand_placeholders()` 展开（`data/config.yaml` 里的 `${UI_PASSWORD}` 就是这么来的）。
+   真实环境的口令只从 `.env` 或 CI secret 注入，不写进入库的 yaml。
+3. **已存在的环境变量永远优先**，`load_dotenv()` 不覆盖。所以 CI 上注入的 secret
+   不会被仓库里的 `.env` 顶掉；而**没配 secret 时 GitHub 求值成空串**，
+   `common/secrets.py` 判的是 `if value:`，空串会回落到"本地 Mock 默认口令"——
+   即行为与完全不注入时逐字节一致。fork 的 PR 拿不到 secret，流水线照样跑得通。
+
+不设任何变量时的默认口令与改造前**逐字节相同**，所以老文档里的登录示例都还有效。
 
 ### 生成报告
 
@@ -180,7 +217,8 @@ pytest --html=report.html --self-contained-html
 | 接口-性能基线 | 2 | 响应时间阈值（可用 `MAX_RESPONSE_MS` 调整）、请求头校验 |
 | UI-登录 | 6 | 登录成功、4 种失败场景（参数化）、退出登录 |
 | UI-商品/购物车 | 8 | 列表渲染、加购角标、多件参数化、购物车内容一致性、标题 |
-| 业务-MES 全链路 | 30 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 23 条业务：状态机守卫分支、乐观锁并发、幂等键（回放/冲突/失败释放/超长拒绝）、并发领料不超卖、流水账实一致、权限矩阵双向断言、令牌校验 |
+| 业务-MES 全链路 | 54 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 23 条业务（状态机守卫分支、乐观锁并发、幂等键回放/冲突/失败释放/超长拒绝、并发领料不超卖、流水账实一致、权限矩阵双向断言、令牌校验）+ 24 条认证与密钥（9 条口令来源、15 条令牌生命周期） |
+| 契约-自动导出 | 224 | 从 FastAPI 自动导出 `docs/openapi.json`（29 operation）并做漂移门禁；schemathesis 属性测试按 spec 生成请求 + 手写契约与自动导出的逐条对照。扫出 6 类真实契约缺陷：DEF-05/06 已修并由正常用例固化，DEF-01~04 共 11 条 `xfail(strict=True)` 钉住 |
 | 契约-登录 | 29 | 用 5 种设计方法推出的 30 条用例（等价类/边界值/判定表/场景法/错误推测），钉住被测服务当前行为并标注 6 个已知缺陷（FIND-01~06） |
 | 数据隔离 | 会话级 1 项 | 会话结束时各表行数与关键数值列合计（库存可用/占用/已发料、流水数量与账面余额）必须回到基线，且流水余额链逐笔自洽（见下方"数据隔离"一节） |
 
@@ -190,6 +228,42 @@ pytest --html=report.html --self-contained-html
 
 登录契约用例同样**不依赖公网**：`testcases/login/` 的 session 级 fixture 起一个
 本地 `login_app`（端口由系统分配），跑完自动 kill。
+
+契约用例里有两条**方向相反**的路子，它们测的不是同一件事，所以都在：
+
+- **手写契约**（`契约-登录` 那 29 条）：人读契约文档、用等价类/边界值/判定表推出用例。
+  强在"知道业务该怎么用"，能测语义（比如"密码错了要提示具体文案"）。
+- **自动导出 + 属性驱动**（`契约-自动导出` 那 224 条）：`docs/openapi.json` 由
+  `scripts/export_openapi.py` 从 FastAPI 应用**自动导出**，再用 schemathesis 按 spec
+  生成请求、断言"响应符合 spec 声明"。强在**不知道业务也能扫**——
+  它靠的是"spec 说什么就该是什么"。
+
+  这不是理论优势。本仓库的 **DEF-05**（`{"qty": "INFINITY"}` 让服务回 500 而不是 422）
+  就是它扫出来的：那句请求手写用例基本不可能想到，因为它既不是合法数量也不是典型非法值，
+  而是"语法上是个字符串、语义上是无穷大"的**畸形输入**。
+  同一类还扫出 **DEF-06**（`page=461168601842738792` 让 `(page-1)*page_size` 溢出 int64，
+  绑进 SQLite 抛 `OverflowError` → 500）——spec 里 `page` 声明的类型就是 integer 且**没有上界**，
+  所以这几个请求完全合法，是服务自己没兜住。
+
+  **这两条已经修好，不再是 `xfail`**：`mock_server/quantity.py` 三个解析函数把 `quantize`
+  收进 `try` 并显式挡掉非有限值（`INFINITY` / `NaN` / `1e999999` → 422），
+  `mock_server/deps.py` 在拼 OFFSET 之前用 `MAX_SQLITE_INTEGER` 挡住越界页码（→ 400
+  `PAGINATION_OUT_OF_RANGE`）。现在由正常用例断言正确行为，而不是钉着旧行为。
+
+  其余契约缺陷（DEF-01~04，共 11 条）**不修，用 `xfail(strict=True)` 钉住**：
+  一旦有人真修好了，用例会从 xfail 变成 XPASS，strict 模式下立刻红——缺陷单会自己找上门。
+
+  它扫出的还有一类"文档与实现不一致"：`POST /api/v1/auth/login` 的 description 写着
+  "同时接受 json 与 x-www-form-urlencoded"，实际发正确凭据的表单会 422、空表单会 500
+  （服务端日志：`The python-multipart library must be installed to use form parsing.`）。
+  契约声称的能力从来没被验证过——**这是只有"拿 spec 当输入去发请求"才会暴露的问题**。
+
+  > **属性测试的绿灯是"这么多样本没找到反例"，不是证明。** 而且它必须**确定性**才有门禁价值：
+  > 默认 8 个样例/operation，`CONTRACT_MAX_EXAMPLES=50` 放大约 2.5 倍耗时（24s → 58s）。
+  > 早期版本正因为把 hypothesis 样例数据库（`.hypothesis/`）当环境噪声，出现过
+  > "清空后绿、留着样本就红"——同一份代码红在不同端点上（`materials` / `work-orders` 的
+  > `page=461168601842738792`，以及 `inventory/{issue,reverse}` 的 404）。
+  > 现在 `-m contract` 在任何样本量下都恒定绿，`.hypothesis/` 也已显式加进 `.gitignore`。
 
 ## 用例设计方法
 
@@ -298,31 +372,35 @@ pytest --html=report.html --self-contained-html
 
 ## 当前实测结果
 
-> 采集时间 **2026-10-13**（Windows 本机，Python 3.12.10，公网接口用例受网络影响会有波动）。
+> 采集时间 **2026-10-14**（Windows 本机，Python 3.12.10，公网接口用例受网络影响会有波动）。
 > **一个容易看错的点**：`api` 与 `mes`、`login` 三个标记有**重叠** ——
 > `testcases/mes/` 的用例同时打了 `mes` 和 `api`，`testcases/login/` 的同时打了
-> `login` 和 `api`。所以 `-m api` 选到 92 条（33 条纯接口 + 30 条 MES + 29 条登录），
-> **这些数字不能相加**。全量共 106 条 = 33 接口 + 14 UI + 30 MES + 29 登录。
-> 也正因为 `-m api` 与 `-m "not ui"` 的**选取集完全相同**，覆盖率门禁挂在前者身上。
+> `login` 和 `api`。所以 `-m api` 选到 116 条（33 条纯接口 + 54 条 MES + 29 条登录），
+> **这些数字不能相加**。全量共 354 条 = 33 接口 + 14 UI + 54 MES + 29 登录 + 224 契约。
+> 契约那 224 条是**独立标记**（`-m contract`），不并入 `api` ——
+> 它们要起本地服务、按 spec 生成请求，属于另一档耗时（约 22 秒），
+> 不适合塞进"日常开发随手跑"的那一组。
 
 ```text
-pytest --collect-only -q                106 tests collected
+pytest --collect-only -q                 354 tests collected
 
-pytest -m "not ui"                      92 passed, 14 deselected in 26.42s
-pytest -m api                           92 passed, 14 deselected in 25.39s
-pytest -m mes                           30 passed, 76 deselected in  8.67s
-pytest -m login                         29 passed, 77 deselected in  1.66s
-pytest -m ui                            14 failed（本机沙箱限制，见下）
+pytest -m api                            116 passed, 238 deselected in 21.08s
+pytest -m mes                             54 passed, 300 deselected in 20.76s
+pytest -m login                           29 passed, 325 deselected in  2.29s
+pytest -m contract                       213 passed, 130 deselected, 11 xfailed in 21.93s
+pytest -m ui                             14 failed（本机沙箱限制，见下）
 
-pytest -m api -n 4 --dist loadfile      92 passed in 12.03s      # 墙钟约 2.2× 加速
-pytest -m mes -n 4 --dist loadfile      30 passed in 12.24s      # 反而比串行(8.67s)慢
-pytest -m mes -n 4 --dist load          30 passed, 1 error       # 退出码 1，见下
+pytest -m api -n 4 --dist loadfile       116 passed in 16.94s      # 墙钟约 2.2× 加速
+pytest -m mes -n 4 --dist load            54 passed in 13.97s      # 当前用例集下也绿，见下
+pytest -m mes -n 4 --dist loadfile        54 passed in 16.84s
+CONTRACT_MAX_EXAMPLES=50 pytest -m contract
+                                         213 passed, 11 xfailed in 58.05s  # 放大 6.25 倍样例，耗时 ×2.6
 
-pytest -m "not ui" --cov=. --cov-report=term --cov-report=
-                                        TOTAL 2889 1621 44%（43.89%）
-python -m pytest -m api ... --cov-fail-under=40
+pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 3953 1016 74%（74.30%）
+pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 3883 1855 52%（52.23%）
                                         Required test coverage of 40% reached（退出码 0）
-python -m mypy                          Success: no issues found in 54 source files
+python scripts/export_openapi.py --check 两份 spec [一致]（退出码 0）
+python -m mypy                          Success: no issues found in 65 source files
 python tools/check_retry.py             当前 12/12；补上第 13 条（见下文「为什么这里会短暂出现一次红」）后会先变 12/13（故意红）
 ```
 
@@ -331,19 +409,43 @@ python tools/check_retry.py             当前 12/12；补上第 13 条（见下
 > 属**环境限制，不是用例缺陷**。所以这一行给的是实跑结果而不是"通过"。
 > 上一版文档在这里写的 `14 passed ... in 27.26s` 采自另一台机器。
 >
-> **`-m mes` 的 deselected 为什么是 76**：deselected = 全量 106 − 选中 30。
-> 旧文档这里写的是 47（按"全量 76"算出来的老快照），与 `--collect-only` 报告的 106
-> 自相矛盾，已按实跑输出订正；`-m mes` 选中数从 29 变成 30，
-> 是因为补了一条"流水账面余额链"用例（见 `docs/测试有效性说明.md`）。
+> **覆盖率门禁挂在 `-m api` 上，而它现在有 52.23%，不是"全量"的 74.30%**：
+> 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
+> "选取集完全相同"那句当时是对的，现在错了）。
+> 门禁仍定在 40：它要拦的是**退化**，不是卡住当前值。
 >
-> **覆盖率 43.89% 是低估，不是高估**：`mock_server/*` 的覆盖率**恒为 0%**
-> （共 1358 条 statements，逐模块清单见 workflow 内注释）。原因不是没测，
-> 而是**进程边界**——mock_server 由 fixture 以 subprocess 拉起，
-> 而 coverage 只统计它自己所在进程内的执行。而这 1358 条恰恰是**被测得最狠**的代码
-> （30 条 MES 用例全打在它上面）。所以门禁定在 40% 而不是 43.89%：
-> 门禁的意义是拦住覆盖率**退化**，不是卡住当前值。
-> 想让它们进统计，需要给子进程加 `-m coverage run --parallel-mode`
-> 再 `coverage combine`——这是一个独立的工程任务，本机未做。
+> **`mock_server/*` 不再恒为 0%，但盲区没有被消掉**——只是不再显示为字面 0%。
+> 这一点必须说清楚，否则比旧的 0% 更有欺骗性。实测对照：
+>
+> ```
+> pytest -m contract -k "not export_script" --cov=.   # 属性测试 + 漂移/对照用例
+>   app.py 0% / routers.py 0% / schemas.py 0% / services.py 0% / deps.py 55%
+> pytest -m contract -k "export_script" --cov=.        # 只跑「把 export_openapi.py 当子进程」的用例
+>   app.py 68% / routers.py 35% / schemas.py 100% / services.py 14% / deps.py 45%
+> ```
+>
+> 两组相加正好是全量报告里 `mock_server/*` 的数值。也就是说：`services.py` 那 14%
+> **不是"被测了 14%"，是"模块被 import 时执行了 14% 的语句"**（模块级常量与 `def` 行）。
+> 原因是覆盖率来自契约套件里那些 `subprocess` 调 `scripts/export_openapi.py` 的用例
+> ——子进程被 pytest-cov 的 `COV_CORE_*` 注入、正常退出时 `atexit` 落盘，
+> 于是它 `import mock_server.app` 建 app 时执行的模块级语句被计入。
+>
+> 而**真正逐端点打服务的那批用例（`-m mes`、契约属性测试）对 Handler 路径的贡献为 0**：
+> 被测服务由 fixture 以常驻子进程拉起（`testcases/mes/mock_server_ctl.py`），
+> 收尾走 `terminate()`，而 Windows 上是 `TerminateProcess` 强杀——
+> coverage 靠 `atexit` 落盘，进程被强杀就什么都不剩。实测 `-m mes --cov=mock_server`
+> → `routers.py` / `services.py` 全 0%。
+> （唯一例外是属性测试里那几处**测试进程内**的显式 `from mock_server.deps import ...`，
+> 它让 `deps.py` 涨到 55%——但那是 import，不是请求。）
+>
+> 所以 `mock_server` 里最大的文件 `services.py`（359 条 statements）**仍然是完整的盲区**，
+> 它那 14% 只说明"这个模块被导入过"。要让真正的执行进统计，得让常驻子进程优雅退出
+> （或用 `--parallel-mode` + `coverage combine`）——这是下一波要盯的地方。
+>
+> **`-m contract` 的 xfailed 恒为 11**：DEF-01、DEF-02a、DEF-02b(×6)、DEF-03、DEF-04(×2)。
+> 它们都是 `strict=True`，所以**修好一条，xpass 会立刻把门禁打红**——
+> 这不是"允许失败的用例"，是"用用例钉住缺陷单"。
+> 早期版本的 DEF-05/DEF-06 也在这 11 条里，现已修好并转成正常用例。
 
 > **登录用例是这套用例里"最划算"的一组**：29 条跑完只要 1.34 秒，
 > 而接口用例 33 条要 3 分多钟——差别在登录用例打的是**本地进程**，
@@ -380,7 +482,7 @@ python tools/check_retry.py             当前 12/12；补上第 13 条（见下
 |---|---|---|
 | `lint` | `ruff check .` + `ruff format --check .`（规则全部来自仓库根的 `ruff.toml`） | ✅ 拦 |
 | `typecheck` | `python -m mypy`（配置来自 `pyproject.toml`） | ✅ 拦 |
-| `test` | 跑四组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约）+ 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
+| `test` | 先做契约漂移门禁 → 契约属性测试 → 再跑四组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约）+ 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
 | `security` | `pip-audit --requirement requirements.lock --strict` | ❌ 不拦（见下） |
 | `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂 | ✅ 拦 |
 | `commit-convention` | 拿最近 30 条真实提交跑 `scripts/check_commit_msg.py` | ✅ 拦（逐条警告，不聚合） |
@@ -411,18 +513,18 @@ python tools/check_retry.py             当前 12/12；补上第 13 条（见下
 
 ### 并行、超时、定时与通知
 
-- **`-m api` 开 `-n 4 --dist loadfile`**（实测 26.42s → 12.03s，约 2.2×）。
-  必须是 `loadfile`：默认的 `--dist load` 在本仓库实测 `-m mes` → `30 passed, 1 error`（退出码 1），
-  根因见上方"关于 `-n` 并行"。
-- **`-m mes` / `-m login` / `-m ui` 刻意不开并行**，三条理由都基于实测：
-  ①`-m mes -n 4 --dist loadfile` 反而**更慢**（12.24s vs 串行 8.67s）——只有 2 个测试文件，
-  2 个 worker 拿不到什么活，却要付两次"造一个独立 SQLite + 起一个 mock_server 子进程"的启动成本；
+- **`-m api` 开 `-n 4 --dist loadfile`**（实测串行 61.68s → 并行 20.93s，约 2.9×）。
+  必须是 `loadfile`：默认的 `--dist load` 在改造前实测 `-m mes` → `30 passed, 1 error`（退出码 1），
+  根因见上方"关于 `-n` 并行"（那个失败现已复现不出来，但仍不开）。
+- **`-m mes` / `-m login` / `-m ui` 刻意不开并行**，理由都基于实测：
+  ①`-m mes -n 4 --dist loadfile` 只快 1.26 倍（16.54s vs 串行 20.88s），收益太小——
+  只有 4 个测试文件，而每个 worker 都要付一次"造一个独立 SQLite + 起一个 mock_server 子进程"
+  的启动成本，把能省的都吃掉了；
   ②这组用例里有**真实线程交叠**的竞态断言（`testcases/mes/concurrency.py` 的
   `assert_requests_overlapped`，靠 `threading.Barrier` 让请求同时在途），
   把机器塞满并行 worker 会拉长每个请求的墙钟、让交叠判据的边界变窄——
-  虽然实测在 loadfile 下仍绿（`-n 8` 连跑 3 次 30 passed），但在它自己该守的那一步上，
-  没有任何理由去引入这份不确定性；③它在 CI 上本来就快（本机 9.4s），
-  省下的几秒换不来"并发判据的可信度"。
+  虽然实测在 loadfile 下仍绿（`-n 8` 连跑 3 次 54 passed，17.88~18.03s），但在它自己该守的那一步上，
+  用 4 秒换一份不确定性，不划算。
   **一句话：能不省的地方就不省——性能门禁和并发断言的价值全在于它说了实话。**
 - **每个 job 都有 `timeout-minutes`**：一个卡死的 job 不设上限会占满默认的 360 分钟，
   把并发名额全部堵住。现在是 lint 10 / typecheck 15 / test 45 / security 15 / pre-commit 15 / commit-convention 10。

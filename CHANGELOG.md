@@ -12,6 +12,82 @@
 
 ## [未发布]
 
+### 新增 —— 认证层与契约驱动（波 1）
+
+这一批改动的主题是：**把「口令写死在代码里」和「接口契约靠人手抄」这两件企业里最先出事的事处理掉**。
+
+#### 口令与密钥外置
+
+- **`common/secrets.py`（新增）**：所有口令统一走一个取值入口。优先级是
+  **已存在的环境变量 > `.env` 文件 > 本地 Mock 默认口令**，三者都没有时直接报错并指向 `.env.example`，
+  不静默回落。
+- **`apis/mes_api.py`**：原先 5 个角色的账号口令是明文常量（`ROLE_ACCOUNTS`），现在只保留
+  「角色 → 账号名 + 口令环境变量名」的映射。实测 `git grep` 那六个口令字面量 → **0 命中**（改造前 22 行）。
+- **`data/config*.yaml` 支持 `${VAR}` 引用**：由 `common/config.py` 的 `expand_placeholders()` 展开，
+  UI 用例的口令因此也能走环境变量。
+- **承重性有红证**：把 `mock_server/db.py` 的种子口令临时改回不认环境变量，用例立刻红
+  （`AssertionError: 用自定义口令登录失败，说明种子口令没跟着 provider 走：401 {...INVALID_CREDENTIALS...}`）；
+  **默认行为逐字节不变**：不设任何变量时，7 个本地 Mock 默认口令与改造前完全一致。
+
+#### 令牌生命周期
+
+- **`apis/token_provider.py`（新增）**：令牌带过期时间与刷新余量，`RoleClient` 改为按需取令牌而非缓死。
+- **`apis/base.py` 新增 401 单次重放**：四条条件缺一不可——
+  `status_code == 401` **且** 本次请求用的是令牌 **且** 本请求还没重放过 **且** 方法是幂等的。
+  403 不重放（权限不足重放多少次都一样）、POST 不重放（可能已经产生副作用）、
+  调用方自传 `Authorization` 时不重放（尊重显式意图）。
+  重放额度**独立于 `self.retries`**：`MesApi` 默认 `retries=0`，共用额度则重放永不发生。
+- **承重性有红证**：删掉刷新时的代次比对 → `4 个线程撞同一个过期令牌，只应登录 1 次，实际 4 次`。
+
+#### 契约驱动：自动导出 + 属性测试
+
+- **`scripts/export_openapi.py`（新增）**：从 FastAPI 应用自动导出 `docs/openapi.json`（29 operations）
+  与 `docs/openapi-login_app.json`。入库的 spec **逐字节等于 `app.openapi()`**，
+  任何用例都不许改它——否则漂移门禁就退化成「文件和自己一致」。
+  `--check` 模式（CI 用的那个）比对文件字节，不一致就红。
+- **`testcases/contract/`（新增，224 条）**：schemathesis 按 spec 生成请求打真实服务。
+  另建一份**内存态补全视图**（`spec_contract.py:build_test_view()`）补上 spec 缺失的
+  security 语义与错误响应声明，而**不动入库文件**。
+- **扫出 6 类真实契约缺陷**，其中 DEF-05 / DEF-06 **本次已修**：
+  - **DEF-05**：`{"qty": "INFINITY"}` → **500** 而非 422。`mock_server/quantity.py` 里
+    `Decimal(str(value))` 构造成功，异常实际抛在 `quantize()`，而 `try` 只包住了构造那一行。
+    修法：显式挡非有限值**并**把 `quantize` 收进 try——两者缺一不可
+    （`'1e999999'` 构造成功、`is_finite()` 为真，却仍在 `quantize` 抛 `InvalidOperation`）。
+  - **DEF-06**：`page=461168601842738792` → **500**。`page` 无上界，`(page-1)*page_size`
+    越过 SQLite INTEGER 上限，绑参时抛 `OverflowError`，被兜底 handler 变成 500。
+    修法：`mock_server/deps.py` 用 `MAX_SQLITE_INTEGER = 2**63 - 1` 在拼 OFFSET 前挡住，
+    返回 **400 `PAGINATION_OUT_OF_RANGE`**（复用既有错误类，与 `page<1` 同类同码）。
+    **刻意没给 Query 加 `le`**：加了超界会变成 FastAPI 的 422，破坏既有 `page=0 → 400` 的约定。
+  - 这两条都是**属性测试扫出来的**，手写用例基本想不到：`"INFINITY"` 语法上是合法字符串、
+    `page=461168601842738792` 语法上是合法整数。
+  - 其余 4 类（DEF-01/02a/02b/03/04，共 **11 条**）**不修，用 `xfail(strict=True)` 钉住**：
+    修好会立刻 XPASS 变红，缺陷单会自己找上门。
+- **门禁的意义在于确定性**：schemathesis 默认按时间预算自适应采样，机器快慢不同就得到不同样例集，
+  于是「这次绿下次红」成为常态。CI 里把样例数钉死为 `CONTRACT_MAX_EXAMPLES=8`。
+  实测默认样例连跑 2 次均 `213 passed, 11 xfailed`；放大到 50 样例（`CONTRACT_FULL=1`）
+  仍是 `213 passed`，耗时 58s（默认约 22s）。
+  **契约套件早期并不确定**：`.hypothesis/` 里的样例数据库会重放历次找到的失败样本，
+  表现为「清空后绿、样本留着就红」——当时正是靠这个现象顺藤摸到 DEF-06。
+  `.hypothesis/` 已加入 `.gitignore`。
+
+#### 一起补齐的工程化
+
+- **`requirements.lock` 重建**（123 → 220 行）：纳入 schemathesis 及传递依赖。
+  已有的 pin 全部未被顶版（`pytest==8.3.3` / `requests==2.32.3` / `starlette==0.41.3` /
+  `jsonschema==4.23.0` 实测一致）。
+- **CI 的 `test` job**：新增契约漂移检测与契约属性测试两步；注入 7 个口令 secret；
+  在检出后固定 `core.autocrlf false`（`--check` 比字节，runner 上 autocrlf 会把行尾差异误报成契约漂移）。
+- **数字全面更新**：用例 106 → **354**（33 接口 + 14 UI + 54 MES + 29 登录 + 224 契约）；
+  `-m api` 92 → 116；`-m mes` 30 → 54；mypy 54 → **65 source files**；
+  覆盖率 43.89% → **74.30%**（全量 `-m "not ui"`，3953 statements / 1016 miss）。
+- ⚠️ **如实登记两件事**：
+  1. `mock_server/*` 的覆盖率**不再显示为 0%**，但那不是"跑着的 Mock 服务被 HTTP 打到"的
+     行为覆盖——`--collect-only` 时它仍全部为 0%，实测数字来自导出脚本子进程的**模块级执行**
+     被 pytest-cov 记账。由 fixture 拉起的真服务子进程仍未被统计，`services.py`（359 条）是最大盲区。
+  2. `-m api` 里有 33 条打**公网**（jsonplaceholder），实测 4 轮里 3 轮撞上
+     `502 Bad gateway`，单轮 1~5 条失败。这不是代码问题了，**处置留到波 2 的 flaky 治理**，
+     本轮不掩盖也不修。
+
 ### 修复 —— 依赖升级暴露的动态属性写法（requests 2.34 自带类型桩）
 
 - **现象**：`dependabot` 的 http-stack 分组 PR（`requests==2.32.3` → `2.34.2`）在 `typecheck` job 变红：
