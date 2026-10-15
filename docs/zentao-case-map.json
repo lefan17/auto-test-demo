@@ -1,0 +1,11 @@
+{
+  "_comment": "用例编号 → 禅道用例 ID 的映射表。**必须进版本控制**：禅道用例 ID 由禅道自己分配，任何人、任何脚本都推不出来，只能在建完用例后由人回填。空表是**当前的一致状态**——还没有真实禅道实例，所以一个 ID 都没有；脚本遇到空表不会静默跳过，会把 30 条 LC 编号原样列进 skipped。",
+  "_how_to_fill": "1) 用 POST /api.php/v1/products/{productID}/testcases 建用例，从响应里取禅道分配的 id；2) 在 cases 里加一条 \"LC-01\": {\"zentao_case_id\": <id>}；3) zentao_case_id 只允许是整数，写错形状脚本会以 SystemExit 拒绝而不是忽略。",
+  "_testtask": 0,
+  "_testtask_note": "测试单 ID，作为 POST /testcases/{id}/results 的 testtask 查询参数下发。0 表示不关联测试单——0 是否被禅道接受为「不关联」**需真实实例核实**。",
+  "_fields": {
+    "zentao_case_id": "禅道用例 ID（必填，int）",
+    "version": "用例版本号（可选，int）；不写就是禅道侧的「最新版本」"
+  },
+  "cases": {}
+}
