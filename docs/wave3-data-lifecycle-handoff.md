@@ -195,7 +195,10 @@ e6668ce  docs(mes): 校正 handoff 里的行号与文件规模
 
 ```
 python -m pytest -m mes -q
-=============== 64 passed, 314 deselected, 1 warning in 38.28s ================
+=============== 64 passed, 314 deselected, 1 warning in 36.04s ================
+
+python -m pytest testcases/mes/test_data_lifecycle.py -q
+======================== 9 passed, 1 warning in 11.83s ========================
 ```
 
 改动前 55 条，新增 9 条（`test_data_lifecycle.py`）。数据回到基线（会话级断言未红）。
@@ -213,6 +216,9 @@ testcases\mes\conftest.py:114: AssertionError
 
 `[数据回收]` 出现（回收真的跑了）、**没有**"会话结束时数据没有回到基线"（没连带污染）、
 只有流水链这一条红 —— 真因没被盖住。
+
+（单号里的 `7PR9AI` 是 `factory.tag()` 每轮随机生成的 6 位后缀，跑两次不会一样；
+判定要看的是"有没有 `[数据回收]` 这一行"，不是那个 tag。）
 
 **承重性验证（关键）**：把 `conftest.py` 换回基线版本再跑同一条探针：
 
