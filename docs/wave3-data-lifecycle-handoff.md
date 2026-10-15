@@ -42,10 +42,10 @@ fixture 自己的 docstring 写着「即使断言失败也能收尾」，代码�
 
 ### 2.1 失败兜底（交付项 1）
 
-**`testcases/mes/data_factory.py:400-434`** 新增 `verify_clean()`：清理之后再回查一遍库，
+**`testcases/mes/data_factory.py:400-435`** 新增 `verify_clean()`：清理之后再回查一遍库，
 按**登记过的**单号/物料编码逐条 `SELECT COUNT(*)`，返回没被删掉的残留清单。
 
-**`testcases/mes/conftest.py:88-119`** teardown 重写为「两件事互不阻断」：
+**`testcases/mes/conftest.py:90-119`** teardown 重写为「两件事互不阻断」：
 
 ```python
 chain_errors = ledger_balance_chain_errors(mes_server.db_path)  # :90  先留证据
@@ -157,11 +157,11 @@ KNOWN_TEST_PREFIXES = ("WO-IDEM-", "WO-CONFLICT-", "WO-DUP-", "WO-FIXED-", "WO-L
 
 | 文件 | 状态 | 改了什么 |
 |---|---|---|
-| `testcases/mes/conftest.py` | 改 | `factory` teardown 重写（:88-119）：try/except BaseException 保证 `cleanup()` 必跑；`verify_clean()` 残留断言；失败先打印再抛回。docstring 补「为什么长成这样」 |
-| `testcases/mes/data_factory.py` | 改 | 新增 `verify_clean()`（:400-434）；`import sqlite3` 提到模块级（原在 `cleanup()` 函数体内） |
-| `testcases/mes/data_ttl.py` | **新增** | 497 行。判据 / `parse_ts` / `purge` / `lingering_rows` / `format_report` / `PurgeReport` / `baseline_row_counts` |
+| `testcases/mes/conftest.py` | 改 | `factory` teardown 重写（改动后的 `:90-119`）：try/except BaseException 保证 `cleanup()` 必跑；`verify_clean()` 残留断言；失败先打印再抛回。docstring 补「为什么长成这样」（`:79-85`） |
+| `testcases/mes/data_factory.py` | 改 | 新增 `verify_clean()`（`:400-435`）；`import sqlite3` 提到模块级（`:32`，原在 `cleanup()` 函数体内） |
+| `testcases/mes/data_ttl.py` | **新增** | 497 行。`FACTORY_TAG_RE`(:45) / `is_test_code`(:57) / `parse_ts`(:64) / `PurgeReport`(:121) / `baseline_row_counts`(:255) / `lingering_rows`(:357) / `purge`(:387) / `format_report`(:446) |
 | `scripts/mes_data_ttl.py` | **新增** | 102 行 CLI。`--db` / `-n --ttl-hours` / `--apply` / `--json` / `--list-lingering` / `--fail-on-lingering` |
-| `testcases/mes/test_data_lifecycle.py` | **新增** | 320 行，9 条用例（子进程故障注入 ×2、TTL 清理、白名单、幂等、模糊项、命名判据、时间解析、`verify_clean`） |
+| `testcases/mes/test_data_lifecycle.py` | **新增** | 322 行，9 条用例（子进程故障注入 ×2、TTL 清理、白名单、幂等、模糊项、命名判据、时间解析、`verify_clean`） |
 | `testcases/mes/_fault_probe.py` | **新增** | 故障注入探针（**故意红**）：改错流水余额 → 命中真实缺陷 |
 | `testcases/mes/_leak_probe.py` | **新增** | 漏登记探针（**故意红**）：绕开工厂造数据 → 被会话级断言抓到 |
 | `README.md` | 改 | 「数据隔离」节补 TTL 入口说明；用例数/耗时/覆盖率/mypy 数字同步为实测值 |
@@ -176,10 +176,13 @@ KNOWN_TEST_PREFIXES = ("WO-IDEM-", "WO-CONFLICT-", "WO-DUP-", "WO-FIXED-", "WO-L
 ### 提交
 
 ```
-<sha>  fix(mes): 用例失败时不再让断言挤掉数据回收
-<sha>  feat(mes): 新增按 TTL 清理跨会话残留测试数据的入口
-<sha>  test(mes): 用真实子进程给数据生命周期五项验收钉住证据
+7f74b6f  fix(mes): 用例失败时不再让断言挤掉数据回收
+739bf59  feat(mes): 新增按 TTL 清理跨会话残留测试数据的入口
+9024f82  test(mes): 用真实子进程给数据生命周期五项验收钉住证据
 ```
+
+（本文件的落盘提交是紧随其后的 `docs(mes): 波 3 数据生命周期的交付说明与文档同步`。
+它自己的 SHA 不写在这里 —— 写进来就会因为 amend 而立刻过期。）
 
 ---
 
