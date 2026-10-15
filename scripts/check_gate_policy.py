@@ -76,6 +76,16 @@ def strip_trailing_comment(raw: str) -> str:
     return TRAILING_COMMENT_RE.sub("", raw)
 
 
+def is_enabled(value: str) -> bool:
+    """这个 continue-on-error 值是不是字面 true——只有它是，才算真的放行。
+
+    `continue-on-error: false` 与表达式（`${{ ... }}`）都不能当作豁免：
+    前者语义上就是「阻断」，后者脚本无法静态判定。把它们算成豁免会让
+    「文档写不阻塞」凭空通过，是同一类假绿。
+    """
+    return value.strip().lower() == "true"
+
+
 @dataclass(frozen=True)
 class WorkflowJob:
     """workflow 里一个 job 的客观事实，全部来自文件本身。"""
@@ -222,10 +232,11 @@ def parse_workflow(text: str) -> dict[str, WorkflowJob]:
                     timeout = int(found.group(1))
             job_level = JOB_LEVEL_COE_RE.fullmatch(body)
             if job_level:
-                relaxed_job = (job_level.group(1), current)
+                # 只有字面 true 才是豁免；false 与表达式都不是，见 is_enabled。
+                relaxed_job = (job_level.group(1), current) if is_enabled(job_level.group(1)) else None
                 continue
             step_level = STEP_LEVEL_COE_RE.fullmatch(body)
-            if step_level:
+            if step_level and is_enabled(step_level.group(1)):
                 relaxed.append((step_name, step_level.group(1), current))
         jobs[name] = WorkflowJob(
             name=name,
