@@ -493,19 +493,19 @@ pytest --html=report.html --self-contained-html
 ```text
 pytest --collect-only -q                 380 tests collected
 
-pytest -m api                            132 passed, 248 deselected in 63.34s
-pytest -m mes                             64 passed, 316 deselected in 36.58s
-pytest -m login                           29 passed, 351 deselected in  2.59s
-pytest -m contract                       213 passed, 156 deselected, 11 xfailed in 24.92s
-pytest -m perf                             2 passed, 378 deselected in  4.25s
-pytest -m ui                             14 failed（本机沙箱限制，见下）
+pytest -m api                            132 passed, 248 deselected in 58.88s
+pytest -m mes                             64 passed, 316 deselected in 35.81s
+pytest -m login                           29 passed, 351 deselected in  2.58s
+pytest -m contract                       213 passed, 156 deselected, 11 xfailed in 18.69s
+pytest -m perf                             2 passed, 378 deselected in  4.53s
+pytest -m ui                             14 passed in 31.11s
 
-pytest -m api -n 4 --dist loadfile       132 passed in 26.26s
-pytest -m mes -n 4 --dist loadfile        64 passed in 18.15s
+pytest -m api -n 4 --dist loadfile       132 passed in 26.28s
+pytest -m mes -n 4 --dist loadfile        64 passed in 18.89s
 CONTRACT_MAX_EXAMPLES=50 pytest -m contract
-                                         213 passed, 11 xfailed in 57.40s  # 放大 6.25 倍样例，耗时 ×2.3
+                                         213 passed, 11 xfailed in 54.42s  # 放大 6.25 倍样例，耗时 ×2.9
 
-pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 5039 558 89%（88.93%）
+pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 5039 560 89%（88.89%）
 pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 4947 1183 76%（76.09%）
                                         Required test coverage of 40% reached（退出码 0）
 pytest -m mes --cov=mock_server --cov-report=term          TOTAL 1374 235 83%
@@ -517,12 +517,13 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
                                         「代理回退判据」那条缺陷用例仍未补，补上后会先变 22/23（故意红）
 ```
 
-> **`-m ui` 的 14 条在本机跑不了**：全部在 setup 阶段失败于
-> `PermissionError: [WinError 5]`（当前沙箱禁止 asyncio 建进程管道），
-> 属**环境限制，不是用例缺陷**。所以这一行给的是实跑结果而不是"通过"。
-> 上一版文档在这里写的 `14 passed ... in 27.26s` 采自另一台机器。
+> **`-m ui` 的 14 条这次真的在本机跑绿了**（`14 passed in 31.11s`）。
+> 上一版文档在这里写的是 `14 failed`，失败点是 setup 阶段的
+> `PermissionError: [WinError 5]`（沙箱禁止 asyncio 建进程管道）——
+> 换了运行环境后该限制不再生效，**用例与代码一字未改**。
+> 把这一行原样保留成"失败"反而不如实，所以按本次实测改掉了。
 >
-> **覆盖率门禁挂在 `-m api` 上，而它现在有 76.09%，不是"全量"的 88.93%**：
+> **覆盖率门禁挂在 `-m api` 上，而它现在有 76.09%，不是"全量"的 88.89%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
 > "选取集完全相同"那句当时是对的，现在错了）。
 > 门禁仍定在 40：它要拦的是**退化**，不是卡住当前值。
