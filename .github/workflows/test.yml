@@ -414,7 +414,7 @@ jobs:
             echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端，刻意串行） |"
             echo "| 登录契约 | \`pytest -m login\`（本地被测服务，钉住当前行为含 6 个已知缺陷） |"
             echo "| 数据隔离 | \`data_isolation_check\`：会话结束时各表行数与库存合计必须回到基线 |"
-            echo "| flaky 治理 | \`pytest -m flaky\` 只对第三方抖动指纹重跑（账本见 \`flaky-governance\` artifact） |"
+            echo "| flaky 治理 | 只有显式标了 \`flaky\` 的 33 条会在指纹匹配时重跑 1 次（裸 \`@pytest.mark.flaky\` 全仓 0 处，无全局 \`--reruns\`；账本见 \`flaky-governance\` artifact） |"
             echo "| 报告 | 见下方 Artifacts 里的 \`allure-report\` |"
             echo "| 失败截图 | 见 \`ui-screenshots\` |"
             if [ -d allure-results ]; then
