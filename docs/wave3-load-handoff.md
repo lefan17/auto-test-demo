@@ -388,15 +388,28 @@ pwsh -File perf/run_load.ps1 -UserClasses LoginOnlyUser -Label login -Port 8341
 
 ## 8. 静态检查与自检原始命令
 
+本工作副本 `work\w3-load` **没有 `.venv`**，PATH 上的裸 `python` 是
+`C:\Users\lefan\AppData\Local\Programs\Python\Python312\python.exe`（**没有 ruff / mypy**，
+裸跑会 `No module named ruff`）。把已验证可用的解释器目录放到 PATH 最前面再跑裸命令：
+
 ```powershell
 cd C:\Users\lefan\DSH_project\接口自动化_3\work\w3-load
-python -m ruff check .            # exit=0
-python -m ruff format --check .   # exit=0
-python -m mypy                    # exit=0（覆盖 pyproject 里的 files 列表）
-python -m mypy perf               # exit=0（裸 mypy 不含 perf，这条才是 perf 的证据）
+$env:PATH = "C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts;" + $env:PATH
+
+ruff check .            # exit=0 → All checks passed!
+ruff format --check .   # exit=0 → 96 files already formatted
+python -m mypy          # exit=0 → Success: no issues found in 74 source files
+python -m mypy perf     # exit=0 → Success: no issues found in 2 source files
 ```
 
-ruff 版本必须与 CI 一致：`ruff 0.16.10`（`.github/workflows/test.yml:60` 钉的版本）。
+等价写法（不改 PATH，直接点解释器）：`& "<该 venv>\Scripts\python.exe" -m ruff check .`、
+`... -m ruff format --check .`、`... -m mypy`。两条都实测过，exit=0。
+
+版本必须与 CI 一致：`ruff 0.16.10`（`.github/workflows/test.yml:60` 钉的版本）、
+`mypy 2.4.0`（同文件 typecheck job）。本机该 venv 里正是这两个版本。
+
+`python -m mypy`（裸命令）**不含 `perf/`**，因为 `pyproject.toml` 的 `[tool.mypy] files`
+没列它，所以额外单列 `python -m mypy perf` 作为 perf 的 mypy 证据（见第 9 节第 2 条）。
 
 ---
 
@@ -416,6 +429,8 @@ ruff 版本必须与 CI 一致：`ruff 0.16.10`（`.github/workflows/test.yml:60
    已验证可用的解释器只有：`C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`
    （另一个 `C:\Users\lefan\AppData\Local\Programs\Python\Python312\python.exe` 会因
    `locust/env.py:17 from .web import WebUI` 断链失败，`work\.venv` 缺 urllib3）。
+   同理，**ruff / mypy 也只在该 venv 里**；`work\w3-load` 自己没有 `.venv`，裸命令要先
+   把该 `Scripts` 目录加进 PATH（见第 8 节）。
 4. **同机局限的量化**：第 4 节的方向判断是**推断**，没有跑过"独立压测机 / 真实网络"的对照
    批次，所以"相差多少"没有数字。
 5. **拐点在 >50 并发、以及长时段下的表现**：只测到 50u、单轮 20s。50u 的 P99 已到 695~970ms
