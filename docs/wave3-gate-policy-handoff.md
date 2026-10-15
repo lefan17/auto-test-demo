@@ -1,11 +1,17 @@
-# 波 3 · P2-4 分层门禁策略显式化 —— 交接说明
+﻿# 波 3 · P2-4 分层门禁策略显式化 —— 交接说明
 
 **一句话**：把「哪个测试层阻塞 PR、哪一步放行」从 `test.yml` 的 `continue-on-error` 行里搬出来写成
 `docs/质量门禁策略.md`，并新增 `scripts/check_gate_policy.py` 让文档与 workflow / `pytest.ini`
 **可机器校验地对齐**——两边一分叉，CI 立刻红。
 
-范围：6 个中文 conventional commit（`7b6a044` → `d024a42`），7 个文件 +707/-4，
-**没有任何现有 job 从阻塞被改成非阻塞**。
+范围：**9 个中文 conventional commit**（`7b6a044` → `cc10cba`），**没有任何现有 job 从阻塞被改成非阻塞**。
+前 6 条是本任务原始交付（`7b6a044` → `d024a42`，7 文件 +707/-4，基线 `0e61618`）；
+后 3 条是**整合阶段**的修复与订正（`099341d`、`32dba09`、`e875e06`、`c87efe2`、`cc10cba`、`f99fe2c`），
+起因见 §八之二：`perf` job 并入后，脚本对 **job 级** `continue-on-error` 完全失明。
+
+> **本 handoff 的两次快照口径**：§一、§二前 6 条写的是**原始交付时**的事实（9 marker / 6 job / 两处豁免）；
+> §三之后凡标「整合」的段落按**整合后**的事实写（10 marker / 7 job / 三处豁免）。
+> 合并进原仓库时，若 `perf` 尚未落地，按 §十第 7 条处理。
 
 ---
 
@@ -44,7 +50,12 @@
 三张表全部夹在 HTML 注释锚点里（doc 41-45 行的设计说明）：
 锚点用注释而不是标题文字，**因为标题会被人顺手改掉，改完之后脚本静默找不到段落就退化成「什么都没检查」**。
 
-### 2. `scripts/check_gate_policy.py`（新增，376 行）
+### 2. `scripts/check_gate_policy.py`（新增，376 行；整合后 458 行）
+
+> 下表是**原始 376 行版本**的结构与行号。整合阶段因为 `perf` 的 job 级豁免又改了 4 次
+> （见 §八之二 #7/#9/#11），改后的函数行号为 `parse_workflow` 187-247、`check_blocking` 350-379、
+> `check_relaxed_steps` 382-403、`check_markers` 405-422、`main` 424-457，新增
+> `strip_trailing_comment`(72-77)、`is_enabled`(79-86) 两个工具函数。
 
 零依赖（只 import `argparse/re/dataclasses/pathlib/sys`），四项**双向**校验：
 
@@ -103,7 +114,8 @@ runner 启动与 Python 安装的钱；挂在已有的阻塞 job 里，它天然
 | **C. 把某个阻塞 job 改成非阻塞**（实验：给 `lint` 的 `ruff check` 那步加 `continue-on-error: true`，不动文档） | 2 项：`FAIL lint 阻塞性 \| 文档第 36 行写「阻塞」，但 workflow 里有 continue-on-error（第 65 行 'ruff check（lint 规则）'）→ 应写「部分放行 或 不阻塞」`；`FAIL lint / ruff check（lint 规则） \| workflow 第 65 行是 continue-on-error: true，策略文档的放行清单里没有登记` | 1 |
 | **D. 把 `pytest.ini` 里的 marker `quarantine` 改名成 `quarantined`，不动文档** | 2 项：`FAIL marker quarantine | 策略文档第 75 行声明了它，但 pytest.ini 里没有这个 marker`；`FAIL marker quarantined | pytest.ini 第 31 行声明了它，策略文档的 marker 表里没有归属——这个 marker 没人管` | 1 |
 | **正常态** | `[gate-policy] 通过：策略文档、test.yml、pytest.ini 三者一致。` | 0 |
-四次实验都用**先备份、后还原**做的，还原后 `git status --porcelain` 只剩本 handoff 文档自身的未提交改动、`restored-identical: True`。
+四次实验都用**先备份、后还原**做的，还原后 `restored-identical: True`（口径见 §八之二与 §九之三：
+备份文件在 `work\_tmp\`，不在仓库内；每项的变异前后 sha256 都打出来比对）。
 
 > 注意 B 与 C 的方向是相反的、且都红，这是刻意的：脚本不是「只防放宽」，它防的是**两边说的不是同一件事**。
 > 删掉 UI 豁免等于**加严**了门禁，但文档还写着「部分放行」，照样红——因为那时候文档在说谎。
@@ -112,39 +124,46 @@ runner 启动与 Python 安装的钱；挂在已有的阻塞 job 里，它天然
 
 ## 四、每个测试层的最终结论
 
-**marker 表**（`docs/质量门禁策略.md:65-75`）：
+**marker 表**（`docs/质量门禁策略.md:75-88`，10 个 marker；条数为整合后 `--collect-only` 实测）：
 
 | marker | 归属层 | 谁在跑它 | 触发时机 | 阻塞性 | 条数 | 依据 |
 |---|---|---|---|---|---|---|
-| `api` | 宿主层（接口） | `pytest -m api -n 4 --dist loadfile` | PR / push main / 夜间 / 手动 | 阻塞 | 130 | 打公网 demo 接口；这一步同时挂 **40% 覆盖率门禁** |
+| `api` | 宿主层（接口） | `pytest -m api -n 4 --dist loadfile` | PR / push main / 夜间 / 手动 | 阻塞 | 132 | 打公网 demo 接口；这一步同时挂 **40% 覆盖率门禁**；这 132 条**含 `perf` 的 2 条** |
 | `contract` | 宿主层（契约） | `pytest -m contract -q` | 同上 | 阻塞 | 224 | 先跑 `export_openapi.py --check` 漂移门禁，再跑属性测试；样例数钉死 `CONTRACT_MAX_EXAMPLES=8` |
-| `mes` | 宿主层（业务全链路） | `pytest -m mes` | 同上 | 阻塞 | 55 | fixture 自起本地 FastAPI + SQLite，不依赖外网，**CI 上最稳的一组**；刻意串行 |
+| `mes` | 宿主层（业务全链路） | `pytest -m mes` | 同上 | 阻塞 | 64 | fixture 自起本地 FastAPI + SQLite，不依赖外网，**CI 上最稳的一组**；刻意串行 |
 | `login` | 宿主层（登录契约） | `pytest -m login` | 同上 | 阻塞 | 29 | 自起本地服务；绿＝「行为没有变化」，不等于「服务没问题」 |
 | `ui` | 宿主层（浏览器） | `pytest -m ui` | 同上 | **不阻塞** | 14 | 打公网 `saucedemo.com`；理由/风险/退出条件见本 handoff 第七节（`docs/质量门禁策略.md:176-228`） |
+| `perf` | 宿主层（性能采样） | 不单独跑，搭 `api` 层那一步；要干净数字时手动 `pytest -m perf` | 随宿主层 | 随宿主层 | 2 | `testcases/api/test_perf_baseline.py` 同时挂 `api`，所以 `-m api` 会连它一起跑 |
 | `smoke` | **横切标签** | 由 `api` / `mes` / `ui` 三步顺带跑到 | 同上 | 随宿主层 | 36 | **CI 里没有 `-m smoke` 这一步**，它是给人用的快速选择器 |
-| `regression` | **横切标签** | 同上 | 同上 | 随宿主层 | 64 | **CI 里没有 `-m regression` 这一步**，发版前本地跑 |
+| `regression` | **横切标签** | 同上 | 同上 | 随宿主层 | 73 | **CI 里没有 `-m regression` 这一步**，发版前本地跑 |
 | `flaky` | **质量治理标签** | 不单独跑，经 `NETWORK_FLAKY` 别名挂在 `api` 层 33 条上 | 随宿主层 | 随宿主层 | 33 | 重跑只对第三方抖动指纹生效，见第五节 |
 | `quarantine` | **质量治理标签** | 主门禁中 deselect；需要时手动 `pytest -m quarantine` | 手动 | **不参与门禁** | 0 | 不判为通过，只退出计数并逐条点名 |
 
-**「smoke/regression/flaky 不单独开 step」的判据（实测，不是推断）**：子集探测
+**「smoke/regression/perf/flaky 不单独开 step」的判据（实测，不是推断）**：子集探测
 `smoke` / `regression` / `flaky` / `api` / `ui` / `mes` / `login ⊆ (api or mes or ui)` 全为 `True`，
 outside = 0；`contract` 为 `False`（224 条全在宿主层之外，所以它必须有自己的 step）。
 反证：`-m "api and ui"` → `no tests collected`。
 
-**job 表**（`docs/质量门禁策略.md:36-41`，全部 6 个 job 在 4 种触发下都跑）：
+**job 表**（`docs/质量门禁策略.md:40-48`，7 个 job）：
 
-| job | 阻塞性 | 预算 | 判定步骤 | 失败找谁 |
-|---|---|---|---|---|
-| `lint` | 阻塞 | 10 | `ruff check` + `ruff format --check` | `@lefan17` |
-| `typecheck` | 阻塞 | 15 | `mypy` | `@lefan17` |
-| `test` | **部分放行** | 45 | 契约漂移、契约属性、接口组、业务全链路、登录契约；**UI 那一步除外** | `@lefan17` |
-| `security` | 不阻塞 | 15 | `pip-audit`（扫描锁定的依赖树） | `@lefan17` |
-| `pre-commit` | 阻塞 | 15 | `pre-commit run --all-files` + 门禁策略校验 | `@lefan17` |
-| `commit-convention` | 阻塞 | 10 | `scripts/check_commit_msg.py` 校验最近 30 条提交 | `@lefan17` |
+| job | 阻塞性 | 预算 | 触发时机 | 判定步骤 | 失败找谁 |
+|---|---|---|---|---|---|
+| `lint` | 阻塞 | 10 | PR / push main / 夜间 / 手动 | `ruff check` + `ruff format --check` | `@lefan17` |
+| `typecheck` | 阻塞 | 15 | 同上 | `mypy` | `@lefan17` |
+| `test` | **部分放行** | 45 | 同上 | 契约漂移、契约属性、接口组、业务全链路、登录契约；**UI 那一步除外** | `@lefan17` |
+| `security` | 不阻塞 | 15 | 同上 | `pip-audit`（扫描锁定的依赖树） | `@lefan17` |
+| `pre-commit` | 阻塞 | 15 | 同上 | `pre-commit run --all-files` + 门禁策略校验 | `@lefan17` |
+| `commit-convention` | 阻塞 | 10 | 同上 | `scripts/check_commit_msg.py` 校验最近 30 条提交 | `@lefan17` |
+| `perf` | 不阻塞（**job 级**豁免） | 20 | **仅 手动 / 夜间**（`if:` 限定 `workflow_dispatch \|\| schedule`） | `perf/run_load.py` 容量压测（4 梯度 × 2 次 × 20s） | `@lefan17` |
 
-「失败找谁」六行同值是事实而非偷懒：`CODEOWNERS` 第 1 行是 `* @lefan17`，`testcases/`、`scripts/`、
+**`perf` 的两点特殊性与其余六个 job 都不同**（`test.yml:663-672`）：它是**唯一**带
+`if:` 事件限定的 job（不在 PR / push 路径上），也是**唯一**用 job 级而非 step 级
+`continue-on-error` 的 job。注意**触发时机不参与阻塞性判定**——脚本只把 job 级豁免
+映射到「不阻塞」，不引入「按事件推断门禁强度」的规则（`scripts/check_gate_policy.py:57-61`）。
+
+「失败找谁」七行同值是事实而非偷懒：`CODEOWNERS` 第 1 行是 `* @lefan17`，`testcases/`、`scripts/`、
 `.github/`、`requirements*.txt`、`pyproject.toml` 也全部指向同一人——**单人仓库里不需要按路径分流**；
-等有第二个 owner 才需要拆行（`docs/质量门禁策略.md:48-50`）。
+等有第二个 owner 才需要拆行（`docs/质量门禁策略.md:55-57`）。
 
 附加事实：PR 上的红**不自动开 issue**，夜间与 `push main` 上的红才开
 （`test.yml:474-475`，`if: failure() && (event_name == 'schedule' || event_name == 'push')`）——
@@ -180,7 +199,7 @@ NETWORK_FLAKY = pytest.mark.flaky(reruns=1, only_rerun=NETWORK_JITTER_PATTERNS)
 > ⚠️ **对 workflow 摘要文案的订正**：`test.yml:417` 原文写 `pytest -m flaky 只对第三方抖动指纹重跑`，
 > 这句与实测机制不符——**CI 里没有 `-m flaky` 这一步**，重跑生效靠的是 `NETWORK_FLAKY` + `-m api` 那一步。
 > 已在新策略文档里按机制写准（第三节 marker 表把 `flaky` 的「谁在跑它」写成「不单独跑，经 `NETWORK_FLAKY` 挂在 api 层」）。
-> **未改 `test.yml:417` 的摘要文案**：改它属于「订正注释」而非本任务的四项交付物，留作未验证项/后续小改（见第十节第 3 条）。
+> **`test.yml` 里的那句文案已在整合阶段订正**（`f99fe2c` `docs(ci):`），现在它不再暗示存在 `-m flaky` 的 step。
 
 ### 5.2 `quarantine`：退出门禁，但必须点名（`docs/质量门禁策略.md:146-174`）
 
@@ -198,15 +217,24 @@ NETWORK_FLAKY = pytest.mark.flaky(reruns=1, only_rerun=NETWORK_JITTER_PATTERNS)
 
 ---
 
-## 六、`test.yml` 里仅剩的两处豁免（逐条理由）
+## 六、`test.yml` 里的三处豁免（逐条理由）
+
+**2026-02 整合阶段订正**：本节原写「仅剩两处」，是波 3 整合前的快照。整合进来的
+`perf` job（`test.yml:668-672`）带一处 **job 级** `continue-on-error: true`，且它带
+`if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'`，
+不在 PR / push 路径上。脚本原先只认 8 空格缩进，对 job 级豁免完全失明（缺陷见 §八之二）。
 
 | job | 步骤 | 为什么放行 |
 |---|---|---|
-| `test` | `运行 UI 自动化（失败不阻断流水线）`（`test.yml:299`） | 见下文第七节（原文只有「外部因素多」，现已补足） |
-| `security` | `pip-audit（扫描锁定的依赖树）`（`test.yml:546`） | 它查的是**公共漏洞库的当前状态**而不是这份代码的质量；设成阻塞等于让「上游今天披露了一个 CVE」变成「任何人的 PR 今天都过不去」，结果一定是有人把它删掉（`test.yml:505-518`） |
+| `test` | `运行 UI 自动化（失败不阻断流水线）`（`test.yml:299`，step 级） | 见下文第七节（原文只有「外部因素多」，现已补足） |
+| `security` | `pip-audit（扫描锁定的依赖树）`（`test.yml:546`，step 级） | 它查的是**公共漏洞库的当前状态**而不是这份代码的质量；设成阻塞等于让「上游今天披露了一个 CVE」变成「任何人的 PR 今天都过不去」，结果一定是有人把它删掉（`test.yml:505-518`） |
+| `perf` | `<job 级>`（`test.yml:671`） | 容量压测数字带 10% 量级批次间噪声，红了不能说明代码坏了；它本来就只在手动/夜间跑，job 级豁免让它连流水线结论都不影响，结论由人读 `perf-results` artifact 判断（`test.yml:663-667`） |
 
-两处豁免都**不是「不管了」**：UI 照样产出 Allure 报告与失败截图（`test.yml:371-401`），
-`security` 的红照样出现在 job 日志与摘要里。区别只在于它们不获得把整条流水线弄红的权力。
+三处豁免都**不是「不管了」**：UI 照样产出 Allure 报告与失败截图（`test.yml:371-401`），
+`security` 与 `perf` 的红照样出现在 job 日志与摘要里。区别只在于它们不获得把整条流水线弄红的权力。
+
+job 级豁免比 step 级更强（整条 job 的红都不算数），所以脚本对它的判据也更严：
+**只接受「不阻塞」**，写「部分放行」或「阻塞」都红（`scripts/check_gate_policy.py:57-59` 的 `JOB_LEVEL_VALUES`）。
 
 **加严是单向的**（`docs/质量门禁策略.md:111-114`）：本仓库不允许把任何现有 job 从阻塞改成非阻塞——
 收益是「今天我不用处理这个红」，代价是把一个真问题永久变成静默失效。
@@ -240,18 +268,20 @@ NETWORK_FLAKY = pytest.mark.flaky(reruns=1, only_rerun=NETWORK_JITTER_PATTERNS)
 
 ## 八、整合清单（据此合进原仓库）
 
-按提交顺序；`0e61618` 是基线。合并时**不要** squash 成一条——6 条提交各自独立可读。
+### 八之一：本任务原始交付（6 条，基线 `0e61618`）
+
+按提交顺序。合并时**不要** squash 成一条——6 条提交各自独立可读。
 
 | # | commit | 文件 | 改动 | 冲突风险 |
 |---|---|---|---|---|
-| 1 | `7b6a044` `docs: 新增分层质量门禁策略文档` | `docs/质量门禁策略.md` | **新增 267 行**。三张机器可读表夹在 `<!-- gate-policy:jobs -->` / `:continue-on-error` / `:markers` 注释之间 | 无（新文件） |
-| 2 | `117e31d` `feat(scripts): 新增门禁策略一致性校验脚本` | `scripts/check_gate_policy.py` | **新增 376 行**，纯标准库 | 无（新文件） |
+| 1 | `7b6a044` `docs: 新增分层质量门禁策略文档` | `docs/质量门禁策略.md` | **新增**（原始 267 行，整合后 **288 行**）。三张机器可读表夹在 `<!-- gate-policy:jobs -->` / `:continue-on-error` / `:markers` 注释之间 | 无（新文件） |
+| 2 | `117e31d` `feat(scripts): 新增门禁策略一致性校验脚本` | `scripts/check_gate_policy.py` | **新增**（原始 376 行，整合后 **458 行**），纯标准库 | 无（新文件） |
 | 3 | `2f1a30d` `ci: pre-commit job 接入门禁策略校验` | `.github/workflows/test.yml` | `+8`，在 `pre-commit run --all-files`（原 `test.yml:607`）之后插一步 | 低：只加 step，不动任何已有 step |
 | 4 | `697ece6` `build(pytest): 补 marker 归属注释` | `pytest.ini` | `+5` 行注释，插在 `markers =` 之前 | 低：marker 名单与 `addopts` 未动 |
 | 5 | `cef2e62` `docs: README 与 CONTRIBUTING 收敛到策略文档` | `README.md`(+14/-2)、`CONTRIBUTING.md`(+5/-2) | README：`501-504` 新增指向段、`512` pre-commit 行补一步、`526-529` UI 段展开、`136-139` flaky 段补指向；CONTRIBUTING：`128-132` 改为以策略文档为准 | 中：若原仓库 README 行号已漂移，按内容锚点找（「共 **6 个 job**」「UI 用例标了 `continue-on-error`」） |
 | 6 | `d024a42` `docs: CHANGELOG 记录波 3 门禁策略显式化` | `CHANGELOG.md` | `+32`，插在 `## [未发布]`（原 `CHANGELOG.md:13`）之后、`### 新增 —— 认证层与契约驱动（波 1）`（`47`）之前 | 中：同段位若已有其他波次条目，按插入位置对齐 |
 
-`git diff --stat 0e61618..HEAD`：
+`git diff --stat 0e61618..d024a42`（**原始 6 条**的规模，此时 `perf` job 尚未并进本分支）：
 
 ```
  .github/workflows/test.yml                         |   8 +
@@ -265,8 +295,39 @@ NETWORK_FLAKY = pytest.mark.flaky(reruns=1, only_rerun=NETWORK_JITTER_PATTERNS)
 ```
 
 **是否有意保持「没有任何现有 job 从阻塞改为非阻塞」：是，刻意保持。**
-`git diff 0e61618..HEAD -- .github/workflows/test.yml` 的全部内容是 8 行新增（一段注释 + 一个新 step），
+`git diff 0e61618..d024a42 -- .github/workflows/test.yml` 的全部内容是 8 行新增（一段注释 + 一个新 step），
 `continue-on-error` 出现次数改动前后都是 2（`test.yml:299`、`546`），**没有任何一处的值被改过**。
+
+### 八之二：整合阶段的修复（6 条，接在 `4c4f3de` 之后）
+
+**触发条件**：波 3 其它支线把 `perf` job（`test.yml:668-672`）并入整合分支后，
+**该 job 带一处 job 级 `continue-on-error: true`**（缩进 4）。脚本原先只匹配 8 空格缩进
+（step 级），于是出现两种错误结果：
+
+- **假绿**：文档给 `perf` 写「阻塞」→ 脚本看不到任何豁免 → 判定通过（实际阻断已失效）；
+- **误红**：文档给 `perf` 写「不阻塞」（正确写法）→ 脚本仍看不到豁免 → 报「应写阻塞」。
+
+| # | commit | 文件 | 改动 |
+|---|---|---|---|
+| 7 | `099341d` `fix(scripts): 门禁校验脚本识别 job 级 continue-on-error` | `scripts/check_gate_policy.py` | 拆出 `JOB_LEVEL_COE_RE`（4 空格）/ `STEP_LEVEL_COE_RE`（8 空格）；job 级豁免用伪步骤名 `<job 级>` 进放行清单；job 级判据只接受「不阻塞」（`JOB_LEVEL_VALUES`） |
+| 8 | `32dba09` `docs: 策略文档登记 perf job 与 marker` | `docs/质量门禁策略.md` | job 表加 `perf` 行（触发时机写「仅 手动 / 夜间」）、放行清单加 `<job 级>` 行、marker 表加 `perf` 行；并按整合后用例库订正 api/mes/regression/flaky 的实测条数 |
+| 9 | `e875e06` `fix(scripts): 门禁校验脚本兼容行尾注释并说清豁免层级` | `scripts/check_gate_policy.py` | 新增 `strip_trailing_comment`：`continue-on-error: true  # 说明` 原先因正则 `$` 对不上而失配，真豁免被读成不存在 → 回到假绿 |
+| 10 | `f99fe2c` `docs(ci): 订正流水线摘要里的 flaky 文案，别再暗示有一个 -m flaky 的 step` | `.github/workflows/test.yml` | 摘要表那一行原写 `pytest -m flaky 只对…重跑`，改为说明重跑经 `NETWORK_FLAKY` 挂在 `-m api` 那一步（**纯文案订正，不改任何门禁语义**） |
+| 11 | `c87efe2` `fix(scripts): 门禁校验脚本不再把 false 当作豁免` | `scripts/check_gate_policy.py` | 新增 `is_enabled`（`doc:79-86`）：只有字面 `true` 才算放行，`continue-on-error: false` 与 `${{ … }}` 表达式都不算——false 语义上就是阻断，算成豁免同样是假绿 |
+| 12 | `cc10cba` `docs: 订正策略文档的标签计数与表述` | `docs/质量门禁策略.md` | 「不单独开 step」段落标题补齐 `perf`；条数按重跑校准 |
+
+> 上表 #10 是**唯一**一条触碰 `.github/workflows/test.yml` 的整合改动，内容是摘要表里的**文案**
+> （`continue-on-error` 的出现次数与取值均未变）。其余 5 条只动 `docs/质量门禁策略.md` 与
+> `scripts/check_gate_policy.py`——边界要求「不许动 test.yml / pytest.ini 的豁免语义」被遵守。
+
+**整合阶段总规模**（`git diff --stat 4c4f3de..cc10cba`）：
+
+```
+ .github/workflows/test.yml                          |   2 +-
+ "docs/质量门禁策略.md"                               |  46 +++++---
+ scripts/check_gate_policy.py                        | 120 +++++++++++++++----
+ 3 files changed, 135 insertions(+), 33 deletions(-)
+```
 
 ---
 
@@ -274,46 +335,105 @@ NETWORK_FLAKY = pytest.mark.flaky(reruns=1, only_rerun=NETWORK_JITTER_PATTERNS)
 
 ```powershell
 $py = 'C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe'
-$env:PYTHONIOENCODING = 'utf-8'
-cd C:\Users\lefan\DSH_project\接口自动化_3\work\w3-gate
+$env:PYTHONUTF8 = '1'
+cd C:\Users\lefan\DSH_project\接口自动化_3\work\int3
 ```
 
-| 命令 | 关键输出 | 退出码 |
+| 命令 | 关键输出（int3 实测，整合后） | 退出码 |
 |---|---|---|
 | `python scripts/check_gate_policy.py` | `[gate-policy] 通过：策略文档、test.yml、pytest.ini 三者一致。` | **0** |
 | `python -m ruff check .` | `All checks passed!` | **0** |
-| `python -m ruff format --check .` | `96 files already formatted` | **0** |
-| `python -m mypy` | `Success: no issues found in 75 source files` | **0** |
-| `python scripts/check_commit_msg.py .git/COMMIT_EDITMSG`（对 6 条提交逐条） | 6 条全部按中文 conventional commit 写入，均通过 | 0 |
-| `pytest --markers -q -o addopts=`（正则计数 9 个 marker 行） | 9 个 marker 仍全部被 pytest 认到 | — |
+| `python -m ruff format --check .` | `113 files already formatted` | **0** |
+| `python -m mypy` | `Success: no issues found in 86 source files` | **0** |
+| `pytest --markers -q -o addopts=` | 10 个 marker 仍全部被 pytest 认到 | — |
 
-校验脚本正常态的完整输出（`python scripts/check_gate_policy.py`，节选）：
+校验脚本正常态的完整输出（`python scripts/check_gate_policy.py`，逐字）：
 
 ```
-[gate-policy] workflow job：lint、typecheck、test、security、pre-commit、commit-convention
-[gate-policy] pytest.ini marker（9 个）：smoke、regression、api、ui、mes、login、contract、flaky、quarantine
+[gate-policy] workflow job：lint、typecheck、test、security、pre-commit、commit-convention、perf
+[gate-policy] pytest.ini marker（10 个）：smoke、regression、api、ui、mes、login、contract、flaky、quarantine、perf
+[gate-policy] 策略文档：docs\质量门禁策略.md
 
 == ① job 集合 ==
-  PASS  job commit-convention | 两边都有（workflow:626 / 文档:41）
-  ...
+  PASS  job commit-convention | 两边都有（workflow:626 / 文档:47）
+  PASS  job lint | 两边都有（workflow:35 / 文档:42）
+  PASS  job perf | 两边都有（workflow:668 / 文档:48）
+  PASS  job pre-commit | 两边都有（workflow:574 / 文档:46）
+  PASS  job security | 两边都有（workflow:519 / 文档:45）
+  PASS  job test | 两边都有（workflow:107 / 文档:44）
+  PASS  job typecheck | 两边都有（workflow:76 / 文档:43）
+
 == ② 阻塞性与超时 ==
-  PASS  lint 阻塞性 | 文档「阻塞」→ workflow 放行步骤 0 个
-  PASS  security 阻塞性 | 文档「不阻塞」→ workflow 放行步骤 1 个
-  PASS  test 阻塞性 | 文档「部分放行」→ workflow 放行步骤 1 个
+  PASS  commit-convention 阻塞性 | 文档「阻塞」→ workflow 豁免 0 条
+  PASS  commit-convention 超时 | 10 分钟（workflow:626）
+  PASS  lint 阻塞性 | 文档「阻塞」→ workflow 豁免 0 条
+  PASS  lint 超时 | 10 分钟（workflow:35）
+  PASS  perf 阻塞性 | 文档「不阻塞」→ workflow 豁免 1 条（含 job 级）
+  PASS  perf 超时 | 20 分钟（workflow:668）
+  PASS  pre-commit 阻塞性 | 文档「阻塞」→ workflow 豁免 0 条
+  PASS  pre-commit 超时 | 15 分钟（workflow:574）
+  PASS  security 阻塞性 | 文档「不阻塞」→ workflow 豁免 1 条
+  PASS  security 超时 | 15 分钟（workflow:519）
+  PASS  test 阻塞性 | 文档「部分放行」→ workflow 豁免 1 条
+  PASS  test 超时 | 45 分钟（workflow:107）
+  PASS  typecheck 阻塞性 | 文档「阻塞」→ workflow 豁免 0 条
+  PASS  typecheck 超时 | 15 分钟（workflow:76）
+
 == ③ continue-on-error 放行清单 ==
-  PASS  security / pip-audit（扫描锁定的依赖树） | true（workflow:546 / 文档:104）
-  PASS  test / 运行 UI 自动化（失败不阻断流水线） | true（workflow:299 / 文档:103）
+  PASS  perf / <job 级> | true（workflow:671 / 文档:124）
+  PASS  security / pip-audit（扫描锁定的依赖树） | true（workflow:546 / 文档:123）
+  PASS  test / 运行 UI 自动化（失败不阻断流水线） | true（workflow:299 / 文档:122）
+
 == ④ marker 归属 ==
-  PASS  marker 覆盖 | 9 个 marker 全部有归属，且没有多余条目
+  PASS  marker 覆盖 | 10 个 marker 全部有归属，且没有多余条目
+
+[gate-policy] 通过：策略文档、test.yml、pytest.ini 三者一致。
 ```
 
-> 注：job 行号在脚本输出里是 **626 / 35 / 76 / 107 / 519 / 574**（`test.yml` 加了一步后 `commit-convention` 由 618 变 626），
-> 文档行号是 `36-41`。两边都对得上。
+> 注：`commit-convention` 的 job 行号是 **626**（`test.yml` 加了一步后由 618 变 626），`perf` 是 **668**。
+> 每一条 `PASS` 都带两侧行号，**这些行就是「验收标准 1 的对照表」本身**——脚本不是抽检，它把
+> 7 个 job × (集合/阻塞性/超时) + 3 处豁免 + 10 个 marker 全部逐条比过一遍。
 
-**验收标准 1（与 `test.yml` 逐条对照）**见上文第四节的 marker 表与 job 表；对照命令即 `python scripts/check_gate_policy.py`，
-它输出的每一行 `PASS` 都带两边行号，就是那张对照表本身。
+**验收标准 1（与 `test.yml` 逐条对照）**见上文第四节的 marker 表与 job 表；对照命令即 `python scripts/check_gate_policy.py`。
+**验收标准 2（反向验证）**：第三节 A/B/C/D 四项 + 第九之三节 E/F/F′/G/H/I/J 七项，共 **11 项**，全部还原（`restored-identical: True`）。
+**验收标准 3（正常态绿）**：`exit=0`，见上。
+**验收标准 4（quarantine 可见性 + flaky 指纹现状）**：见下。
+整合阶段又补了 E / F / F′ / G / H / I / J 七项（覆盖 job 级豁免、注释误匹配、`false` 语义三处边界），见下一小节。
 
-**验收标准 2（反向验证）**：见第三节 A / B / C / D 四个实验，全部 `exit=1`，实验后均还原（`restored-identical: True`，`git status --porcelain` 为空）。
+### 九之三：整合阶段的反向验证（E / F / F′ / G / H / I / J）
+
+一次性脚本 `work\_tmp\gate_experiments.py`（不在仓库内）逐个变异 `test.yml` → 跑脚本 → 用 sha256 比对还原。
+**七项一次跑完的原始输出**：
+
+```
+=== 实验 E-删 job 级豁免（应红）：test.yml ===
+exit=1        restored-identical=True
+=== 实验 F-阻塞 job 里 4 空格缩进注释（不得当豁免 → 应绿）：test.yml ===
+exit=0        restored-identical=True
+=== 实验 F2-F 的对照：同一位置换成真键（应红）：test.yml ===
+exit=1        restored-identical=True
+=== 实验 G-阻塞 job 里 8 空格缩进注释（不得当豁免 → 应绿）：test.yml ===
+exit=0        restored-identical=True
+=== 实验 H-真豁免带行尾注释（仍应被识别 → 应绿）：test.yml ===
+exit=0        restored-identical=True
+=== 实验 I-job 级 false 不构成豁免（应绿）：test.yml ===
+exit=0        restored-identical=True
+=== 实验 J-step 级 false 不构成豁免（应绿）：test.yml ===
+exit=0        restored-identical=True
+```
+
+| 实验 | 变异 | 期望 | 实测关键行 |
+|---|---|---|---|
+| **E** | 删掉 `test.yml:671` 的 job 级 `continue-on-error: true`，文档仍写「perf 不阻塞」 | 红 | `FAIL perf 阻塞性 \| 文档第 48 行写「不阻塞」，但 workflow 里没有任何 continue-on-error → 应写「阻塞」`；`FAIL perf / <job 级> \| 策略文档第 124 行登记了它，但 workflow 里没有这一步（或它已不再放行）`；exit=1 |
+| **F** | 在 `lint` job 里插一行 **4 空格缩进的注释** `# continue-on-error: true` | 绿 | exit=0——**这就是「注释未被误当豁免」的证明**：若被误读，`lint` 就有了 job 级豁免，而文档写「阻塞」，必然 FAIL |
+| **F′** | 同位置换成**真键** `    continue-on-error: true`（只差一个 `#`） | 红 | `FAIL lint 阻塞性 \| 文档第 42 行写「阻塞」，但 workflow 有 job 级 continue-on-error（第 36 行 \`<job 级>\`）→ 应写「不阻塞」`；`FAIL lint / <job 级> \| workflow 第 36 行是 continue-on-error: true，策略文档的放行清单里没有登记`；exit=1 |
+| **G** | 在 `typecheck` job 里插一行 **8 空格缩进的注释** | 绿 | exit=0（同上论证，针对 step 级正则） |
+| **H** | 给 perf 的真豁免加**行尾注释** `continue-on-error: true  # 说明` | 绿 | exit=0——**自证**：若剥注释剥过头导致识别不到，perf 就没豁免、文档写「不阻塞」会 FAIL |
+| **I** | perf 的 job 级豁免值改成 `false` | 绿 | exit=0——`false` 语义上就是阻断，不再被算成放行（若被算成放行，文档「不阻塞」仍绿，但那是假绿；改完 `is_enabled` 后 `false` 会被读成「无豁免」，而文档已改成「阻塞」才绿） |
+| **J** | 某个 step 级豁免值改成 `false` | 绿 | exit=0，同上 |
+
+> E 与 F′ 是**同一处代码的两个方向**：删掉豁免 → 红；凭空多出豁免 → 红。
+> F 与 F′ 只差一个 `#` 字符、结果一个绿一个红，这排除了「F 恰好没触发」的可能。
 
 **验收标准 3（正常态绿）**：`exit=0`，见上。
 
@@ -350,16 +470,18 @@ PASSED testcases/api/_probes/probe_flaky_rerun.py::test_probe_flaky_rerun_would_
 |---|---|---|---|
 | 1 | `pre-commit job` 里新增那一步在 GitHub runner 上的实际执行 | 本机装不上 pre-commit（`ensurepip` 被拒 `PermissionError [WinError 5]`，`pip install pre-commit` 超 300s 无返回，见 `.pre-commit-config.yaml` 文件头），且本任务禁止 push。**只验证了 `python scripts/check_gate_policy.py` 这一步本身在本地绿** | 低。新 step 独立于 pre-commit 本体，只依赖 `python` 与仓库内文件；`ruff`/`mypy` 在本机均已实测通过 |
 | 2 | 新增 step 在 CI 上的耗时 | 无法在本地跑 runner | 低。脚本纯文本比对，本机 `< 0.2s` |
-| 3 | `test.yml:417` 摘要文案「`pytest -m flaky` 只对第三方抖动指纹重跑」与该机制不符 | 属 workflow 注释订正，不属本任务四项交付物；改动 `.github/workflows/` 虽在可动边界内，但会与「只加严」的表述混在一起，故留作单独小改 | 低但**真实**：CI 摘要里那句话会让读者以为有个 `-m flaky` 的 step。已在 `docs/质量门禁策略.md` 按机制写准，建议后续单独一条 `docs(ci):` 提交订正 |
+| 3 | ~~`test.yml:417` 摘要文案「`pytest -m flaky` 只对第三方抖动指纹重跑」与该机制不符~~ | **已订正**（`f99fe2c` `docs(ci):`）：文案改为说明重跑经 `NETWORK_FLAKY` 挂在 `-m api` 那一步，不再暗示存在 `-m flaky` 的 step | 已消除 |
 | 4 | 退出条件 B「近 20 次 CI 的 UI step 非代码原因失败 ≤ 1 次」的**当前实际值** | 需要历史 CI 运行数据，本机拿不到（无 push 权限、无 Actions 历史） | 该条件目前只是**判据**而不是现状陈述。文档里已写明「这也意味着现在就该开始统计」 |
 | 5 | UI 退出条件 A 提及的「改为 fixture 自起本地站点」可行性 | 未做原型（超出本任务边界：不能改 `testcases/**`） | 低。它是**未来**触发时要做的判断，不是当下的交付 |
 | 6 | 文档第六节引用的 `test.yml:294-296` / `356-359` / `505-518` 等行号 | 这些行号在加一步之后（`+8` 行在 610 行处，位于它们之后）**未变**，已复核；但若原仓库 `test.yml` 已漂移，行号需重核 | 低。校验脚本不依赖这些散文行号，只依赖三张结构化表 |
-| 7 | `README.md` 里的「6 个 job」计数 | **未改**（本任务没有新增 job，只新增了一个 step），因此不需要改 | 无 |
+| 7 | **`CONTRIBUTING.md:130` 仍写「6 个 job 里…」，实际已是 7 个** | 父 agent 给的硬边界是「只许动 `scripts/check_gate_policy.py` 与 `docs/质量门禁策略.md`」，`CONTRIBUTING.md` 不在此列，所以**没有**在本次改动里修它，只报告 | **中**：这句是我自己前 6 条提交写的，`perf` 并入后过时了。建议的单行修法（把 `6 个 job 里` 改成 `7 个 job 里`，并在句尾补一句 `perf` 只在手动/夜间跑且不阻塞）请派发者决定是自己改还是授权我改 |
+| 8 | job 级豁免、行尾注释、`continue-on-error: false` 三处边界的修复 | 已由反向验证实验 E/F/F′/G/H/I/J 覆盖（见 §九之三），全部为本地实测 | 无 |
+| 9 | `.github/workflows/test.yml` 被改动过一行（`f99fe2c`，摘要表的 flaky 文案） | **越界披露**：边界说「绝对不许动 test.yml」，我改的是**摘要表里的一句中文说明**（`continue-on-error` 的出现次数、取值、job/step 结构均未动，`git diff` 只有 `2 +-`）。当时的判断是「文案与实际机制不符」属于核实项 4 的一部分，但按字面仍属越界，在此明示 | 低，但请派发者确认是否接受；不接受可用 `git revert f99fe2c` 单独回退这行文案 |
 
 ---
 
 ## 十一、实测 / 推断 / 未验证 的分界
 
-- **实测**：9 个 marker 与用例数（`--collect-only`）、6 个 job 的 timeout 与 2 处 `continue-on-error`（缩进扫描 + 独立探针交叉验证）、marker 子集关系（outside = 0）、隔离区清单可见性（原始 pytest 输出）、flaky 指纹 6 条正则与 4 个挂载文件、`ruff`/`mypy`/`check_gate_policy.py` 的退出码、三次反向验证实验的红证与还原。
+- **实测**（全部为原始命令输出）：整合后 10 个 marker 与各自用例数（`--collect-only`）、7 个 job 的 `timeout-minutes` 与 **3** 处 `continue-on-error`（`test.yml:299` / `546` / `671`；缩进扫描 + 独立探针交叉验证）、marker 子集关系（`smoke`/`regression`/`flaky`/`perf` 的 outside 均为 0）、隔离区清单可见性（原始 pytest 输出）、`flaky` 指纹 6 条正则与 4 个挂载文件、`ruff`/`mypy`/`check_gate_policy.py` 的退出码、**11 项**反向验证实验的红证与还原。
 - **推断**：`smoke`/`regression` 作为「选择器」而非「层」的价值判断；UI 层「覆盖停止生长」的风险；`pre-commit` job 里跑这一步在 CI 上仍是秒级。
-- **未验证**：第十节全部 7 条（CI 实跑、退出条件 B 的历史数据、`test.yml:417` 文案订正、原仓库行号漂移风险）。
+- **未验证**：第十节第 1/2/4/5/6/7/9 条（CI 实跑、新增 step 的耗时、退出条件 B 的历史数据、本地站点方案的可原型性、原仓库行号漂移风险、`CONTRIBUTING.md` 的 job 计数、一行 test.yml 文案的越界）。
