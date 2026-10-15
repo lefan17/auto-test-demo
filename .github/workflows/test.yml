@@ -330,6 +330,30 @@ jobs:
         run: pytest -m login --alluredir=allure-results
 
       # ---------------------------------------------------------------------
+      # 用例编号 → nodeid 的索引与禅道上报（波 3 · P2-1 新增）
+      # ---------------------------------------------------------------------
+      # 为什么要单独跑这两个：
+      #
+      # 1. `scripts/test_report_to_zentao_stub.py` 在 `scripts/` 下，
+      #    而 pytest.ini 的 `testpaths = testcases` **不会**递归到它——
+      #    不写这一步，这个测试就永远没人跑。它自带 stdlib 的桩 HTTP 服务，
+      #    不需要真实禅道实例、不需要网络，只断言发出的请求形状对不对。
+      # 2. `scripts/case_index.py --verify` 是**索引自身的门禁**：它扫描 testcases/
+      #    抽出用例编号，再跑一次真实 `--collect-only` 去对 nodeid；只要有一条编号
+      #    解析不到 nodeid 就以 **exit 3** 失败。加它的意义是拦住"用例被改名/挪走、
+      #    编号却还留在文档里"这种静默腐烂——那时追溯链路会悄悄断掉，报告里看不出来。
+      #
+      # 两步都不设 continue-on-error：它们红了就是链路真的断了。
+      # 也**不设 PYTHONPATH**：全仓收集数在设置了 pylibs 路径时会从 181 涨到 369
+      # （pylibs 里 schemathesis/hypothesis 自带的 conftest 测试会被收集），
+      # 索引是对着本仓的用例说话的，不该把别人的测试算进来。
+      - name: 禅道上报脚本的桩服务测试
+        run: python -m pytest scripts/test_report_to_zentao_stub.py -q
+
+      - name: 用例编号索引自检（有一条编号解析不出 nodeid 就红）
+        run: python scripts/case_index.py --verify
+
+      # ---------------------------------------------------------------------
       # flaky 治理账本（波 2 新增）
       # ---------------------------------------------------------------------
       # 这一步**故意不设 if: failure()**：抖动与隔离区在绿的时候也必须被看见，
