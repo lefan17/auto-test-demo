@@ -1,0 +1,310 @@
+"""用例 ↔ operationId 覆盖矩阵。
+
+**诚实性红线**：覆盖归属只有两个来源，二者都没有就算未覆盖。
+
+1. **显式标注** —— ``@pytest.mark.covers("login_api_v1_auth_login_post")``（marker 名 ``covers``）
+2. **源码路径字符串** —— 用例源码里出现的接口路径字面量，例如
+   ``("GET /api/v1/materials", 401)`` 里的 ``/api/v1/materials``
+
+不许做任何推断：不按文件名猜、不按 marker 名猜、不按目录归属猜、不把「同模块里有一条
+用例覆盖了某路径」推广到同模块其它用例。猜出来的覆盖率报表比没有报表更危险，因为它会
+让人以为某个接口被测过。
+
+代价是显式可见的：``testcases/api/**`` 那 42 条用例走 ``apis/`` 封装对象发请求，源码里
+一个路径字面量都没有，因此在矩阵里全部表现为「不贡献覆盖」——这是本机制如实反映的
+现状，不是工具缺陷。要提升覆盖率，正确的做法是在用例上加 ``covers`` marker。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from qaplat.paths import CACHE_DIR, DEFAULT_SPEC_PATH, ROOT
+
+#: 源码路径字符串的提取范围：以 ``/api`` 开头的字面量。
+_PATH_LITERAL_RE = re.compile(r"(?<![\w.])(/api[A-Za-z0-9_\-./{}]*)")
+
+#: 路径归一化时把 ``{...}`` 占位符统一成 ``{}``，好让 ``f"/api/v1/materials/{code}"``
+#: 与 spec 里的 ``/api/v1/materials/{material_code}`` 能对上。
+_PLACEHOLDER_RE = re.compile(r"\{[^{}]*\}")
+
+COVERAGE_JSON = CACHE_DIR / "registry.json"
+
+
+@dataclass(frozen=True)
+class OperationCoverage:
+    operation_id: str
+    method: str
+    path: str
+    covered_by: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CaseInfo:
+    node_id: str
+    markers: tuple[str, ...]
+    referenced_paths: tuple[str, ...]
+    covers: tuple[str, ...]
+
+
+def normalize_path(path: str) -> str:
+    """接口路径归一化：占位符统一、去掉查询串与结尾斜杠。
+
+    ``/api/v1/materials/{material_code}`` 与 ``/api/v1/materials/{code}`` 归一化后都是
+    ``/api/v1/materials/{}``——参数名不同但指向同一个 operation，这属于合理的等价，
+    不属于「猜」。
+    """
+    text = path.split("?", 1)[0].strip().rstrip("/")
+    text = _PLACEHOLDER_RE.sub("{}", text)
+    return text or "/"
+
+
+def load_operations(spec_path: str | Path = DEFAULT_SPEC_PATH) -> list[tuple[str, str, str]]:
+    """从 OpenAPI 文档读出 ``(operation_id, method, path)``，按 spec 里的顺序。
+
+    ``operationId`` 缺失时用 ``f"{method} {path}"`` 兜底——契约里允许没有 operationId 的
+    spec，硬造一个 id 会让覆盖矩阵与其他工具的 id 对不上。
+    """
+    spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    paths = spec.get("paths") or {}
+    operations: list[tuple[str, str, str]] = []
+    for path, item in paths.items():
+        if not isinstance(item, dict):
+            continue
+        for method, operation in item.items():
+            if method.lower() not in ("get", "post", "put", "patch", "delete", "head", "options", "trace"):
+                continue
+            if not isinstance(operation, dict):
+                continue
+            method_upper = method.upper()
+            operation_id = str(operation.get("operationId") or f"{method_upper} {path}")
+            operations.append((operation_id, method_upper, str(path)))
+    return operations
+
+
+def extract_paths_from_source(text: str) -> tuple[str, ...]:
+    """从一段源码文本里提取 ``/api...`` 路径字面量（已归一化、去重、稳定排序）。"""
+    return tuple(sorted({normalize_path(match) for match in _PATH_LITERAL_RE.findall(text)}))
+
+
+def read_referenced_paths(file_path: str | Path) -> tuple[str, ...]:
+    """读用例源码文件并提取路径字面量。读不到就返回空元组，不抛异常。"""
+    try:
+        text = Path(file_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ()
+    return extract_paths_from_source(text)
+
+
+def build_coverage(cases: Sequence[CaseInfo], operations: Sequence[tuple[str, str, str]]) -> list[OperationCoverage]:
+    """把用例的归属信息投影到 operation 上。
+
+    两条来源分别命中并**合并**（同一用例既写了 covers 又引用了路径时只出现一次）；
+    ``covered_by`` 稳定排序，保证同一份输入永远产出同一份矩阵，diff 才有意义。
+    """
+    path_index: dict[str, set[str]] = {}
+    covers_index: dict[str, set[str]] = {}
+    for case in cases:
+        for path in case.referenced_paths:
+            path_index.setdefault(normalize_path(path), set()).add(case.node_id)
+        for operation_id in case.covers:
+            covers_index.setdefault(operation_id, set()).add(case.node_id)
+
+    coverage: list[OperationCoverage] = []
+    for operation_id, method, path in operations:
+        owners = set(covers_index.get(operation_id, ()))
+        owners |= path_index.get(normalize_path(path), set())
+        coverage.append(
+            OperationCoverage(
+                operation_id=operation_id,
+                method=method,
+                path=path,
+                covered_by=tuple(sorted(owners)),
+            )
+        )
+    return coverage
+
+
+def uncovered(coverage: Sequence[OperationCoverage]) -> list[OperationCoverage]:
+    """未覆盖的 operation，按 ``operation_id`` 稳定排序。"""
+    return sorted((c for c in coverage if not c.covered_by), key=lambda c: c.operation_id)
+
+
+def owner_files(covered_by: Sequence[str]) -> list[tuple[str, int]]:
+    """把归属用例按源文件归组：``[(文件, 用例数), ...]``，用例多的文件在前。
+
+    为什么需要这个视图：参数化用例（``testcases/contract/test_schemathesis_properties.py``
+    一条函数生成 188 条用例）会让单个 operation 的 ``covered_by`` 挂上上百个 nodeid。
+    归因粒度是**文件级**——那个文件里的路径字面量属于文件里的每一条用例——所以
+    「188 条用例覆盖某接口」这句话在计数上会误导人。按文件归组后读起来才是事实：
+    「1 个文件（188 条用例）引用了这个路径」。计数口径写进 docs/platform-usage.md。
+    """
+    counts: dict[str, int] = {}
+    for node_id in covered_by:
+        file_part = node_id.split("::", 1)[0]
+        counts[file_part] = counts.get(file_part, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def coverage_ratio(coverage: Sequence[OperationCoverage]) -> float:
+    """覆盖率 = 有归属的 operation / 全部 operation；没有 operation 时返回 0.0。"""
+    if not coverage:
+        return 0.0
+    return sum(1 for c in coverage if c.covered_by) / len(coverage)
+
+
+def collect_cases(pytest_args: Sequence[str] = ()) -> list[CaseInfo]:
+    """收集用例并附上 markers / 路径归属。
+
+    子进程命令是契约指定的 ``pytest --collect-only -q -q --no-header``（``-q`` 写两遍
+    才会输出「一行一个 nodeid」的纯文本，一遍是给人看的树形结构）。额外挂
+    ``-p qaplat._dump``，让同一次收集顺带把 markers 与源文件路径带回来——markers 无法
+    从 ``--collect-only`` 的文本里得到，多跑一次收集只为了拿 marker 属于浪费。
+
+    收集阶段报错（例如缺 schemathesis 这类可选依赖）时 pytest 会中断并只返回部分结果；
+    这里把已拿到的部分原样返回，缺哪些由调用方通过覆盖率数字与 ``registry gaps`` 看到。
+    """
+    # 用 with 而不是裸 mkdtemp：收集一次就漏一个目录，跑几十轮后临时区里
+    # 堆满几百个只有 collect.json 的 qaplat-collect-*，排查别的问题时全是噪声。
+    with tempfile.TemporaryDirectory(prefix="qaplat-collect-") as tmp_dir:
+        dump_path = Path(tmp_dir) / "collect.json"
+        argv = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-q",
+            "--no-header",
+            "-p",
+            "qaplat._dump",
+            "--qaplat-dump",
+            str(dump_path),
+            *[str(item) for item in pytest_args],
+        ]
+        # 与 gate.run_layer 同样的理由：管道里的子进程默认按 cp936 输出，这里按 utf-8 解码，
+        # 中文用例名会变成替换字符（nodeid 本身是 ASCII 所以不一定立刻暴露）。
+        child_env = dict(os.environ)
+        child_env.setdefault("PYTHONIOENCODING", "utf-8")
+        proc = subprocess.run(
+            argv,
+            cwd=str(ROOT),
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+
+        payload: dict[str, object] = {}
+        if dump_path.exists():
+            try:
+                loaded = json.loads(dump_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    payload = loaded
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+
+    markers = _as_str_map(payload.get("markers"))
+    files = _as_str_map(payload.get("files"))
+    covers = _as_str_map(payload.get("covers"))
+    node_ids = sorted(markers) or _node_ids_from_stdout(proc.stdout or "")
+
+    cases: list[CaseInfo] = []
+    for node_id in node_ids:
+        case_markers = markers.get(node_id, ())
+        # ``files`` 走的是同一套「值是元组」的归一化，单值源文件取第一个元素。
+        file_entries = files.get(node_id, ())
+        source = file_entries[0] if file_entries else None
+        if source is None and "::" in node_id:
+            source = str(ROOT / node_id.split("::", 1)[0])
+        referenced = read_referenced_paths(source) if source else ()
+        cases.append(
+            CaseInfo(
+                node_id=node_id,
+                markers=tuple(case_markers),
+                referenced_paths=tuple(referenced),
+                covers=tuple(covers.get(node_id, ())),
+            )
+        )
+    return cases
+
+
+def _as_str_map(value: object) -> dict[str, tuple[str, ...]]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for key, item in value.items():
+        if isinstance(item, str):
+            out[str(key)] = (item,)
+        elif isinstance(item, Iterable):
+            out[str(key)] = tuple(str(x) for x in item)
+    return out
+
+
+def _node_ids_from_stdout(text: str) -> list[str]:
+    """从 ``--collect-only -q -q`` 的输出里抠出 nodeid。
+
+    只认形如 ``path::name`` 的行：末尾的 ``363 tests collected in 0.66s`` 与 warnings
+    summary 里的 ``jsonschema.RefResolutionError,`` 这类行都不含 ``::``，自然被过滤掉。
+    """
+    ids: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "::" in stripped and not stripped.startswith(("=", "-", "!", "E ")):
+            ids.append(stripped)
+    return ids
+
+
+def load_coverage_matrix(json_path: str | Path = COVERAGE_JSON) -> list[OperationCoverage]:
+    """读回 ``registry build`` 落盘的矩阵（给 report 用）。"""
+    path = Path(json_path)
+    if not path.exists():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [
+        OperationCoverage(
+            operation_id=str(item["operation_id"]),
+            method=str(item["method"]),
+            path=str(item["path"]),
+            covered_by=tuple(item.get("covered_by", ())),
+        )
+        for item in data.get("coverage", [])
+    ]
+
+
+def dump_coverage_json(
+    coverage: Sequence[OperationCoverage],
+    operations_count: int,
+    cases_count: int,
+    json_path: str | Path = COVERAGE_JSON,
+) -> Path:
+    """把矩阵写成 JSON。"""
+    path = Path(json_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "operations_total": operations_count,
+        "cases_total": cases_count,
+        "covered": sum(1 for c in coverage if c.covered_by),
+        "coverage_ratio": coverage_ratio(coverage),
+        "coverage": [
+            {
+                "operation_id": c.operation_id,
+                "method": c.method,
+                "path": c.path,
+                "covered_by": list(c.covered_by),
+            }
+            for c in coverage
+        ],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
