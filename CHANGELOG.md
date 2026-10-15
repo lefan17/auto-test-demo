@@ -287,6 +287,44 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
   「标了 flaky 的用例首跑失败会被重跑」「真回归不被重跑吞掉」「隔离区用例退出主门禁且清单被打印」
   「隔离区能单独跑」。三条机制各配一次反向对照（改坏 → 红 → 还原 → 哈希一致）。
 
+### 新增 —— 数据生命周期：失败兜底、TTL 清理、清理幂等（波 3）
+
+这一批处理的是**「测试数据收不回来」**：`data_factory` + `data_isolation` 的登记式回收
+和 8 张表快照校验都已经到位，缺的是**失败那一路**和**跨会话残留**。
+
+- **`testcases/mes/conftest.py`（修复，`7f74b6f`）**：`factory` 的 teardown 原本是直线代码
+  —— `chain_errors = ledger_balance_chain_errors(...)` → `assert not chain_errors` →
+  `actions = f.cleanup()`。**流水链一红，`cleanup()` 那行就永远走不到**，用例造的数据
+  全留在库里，会话收尾再报一次基线漂移，真正的原因被第二层红盖住。
+  改成两件事互不阻断：回收一定执行（`except BaseException`，覆盖 Ctrl-C），
+  失败**先打印再原样抛回**（不吞掉 —— 吞掉就等于让"没删干净"永远不可见）。
+  **承重性有红证**：把探针跑在修复前的 conftest 上，输出里**没有** `[数据回收]`，
+  并出现 `表 work_orders: 基线 0 行 -> 现在 1 行（差 +1）`、`表 stock_ledger: ... 差 +2`；
+  修复后只剩流水链那一条红。
+- **`testcases/mes/data_factory.py`（新增 `verify_clean()`）**：清理后再按登记过的
+  单号/编码逐条回查，返回**没被删掉的残留**供 teardown 断言。少了这一步，
+  一次没生效的 DELETE 会表现为"用例全绿、下一轮基线漂移"，报错指向下一轮。
+- **`testcases/mes/data_ttl.py`（新增）+ `scripts/mes_data_ttl.py`（新增）**：
+  按 TTL 清理跨会话残留。判据两级，**基线白名单是硬否决**：种子用户/物料/
+  `(物料, 仓库)` 键命中即永不删除，**哪怕它已经"过期"** —— 种子行的 `created_at`
+  就是建库那一刻，本来就老于任何 TTL，**只看时间判定，第一次跑就会把种子数据全删掉**。
+  另一级是「认得出是测试数据」：工厂标记正则 + 手写字面量清单
+  （仓库里有一批用例手写编码如 `FG-TEST-01`/`FG-X`/`MAT-ACL`/`WO-IDEM-*`，不含随机标记）。
+  认不出来的过期行**不删只报告**。默认 dry-run，`--ttl-hours` 可配，
+  `--fail-on-lingering` 可接 CI。
+- **`testcases/mes/test_data_lifecycle.py`（新增，9 条）**：用**真 pytest 子进程**跑两条
+  故意失败的探针（放在不匹配 `python_files = test_*.py` 的 `_fault_probe.py` /
+  `_leak_probe.py` 里，默认收集不到），把「兜底真的存在」「清理不彻底会被会话级断言抓到」
+  变成可执行证据；另有 TTL 清理前后 `row_counts` 对照、连跑两次的幂等、白名单保护、
+  时间戳两种真实形状的解析容错。
+- 回归数：`pytest -m mes` **55 → 64 passed**；`ruff check` / `ruff format --check` /
+  `mypy`（74 → 79 files）全过。
+
+> **踩过的坑，留在探针注释里**：故障探针**第一版**用"正文随便抛个异常"，
+> 它对着**修复前**的代码也是绿的 —— 正文异常根本不阻止 teardown 继续跑，
+> `cleanup()` 照样执行，**等于什么都没证明**。真正会挡住 `cleanup()` 的只有
+> "先断言、后回收"那个顺序，探针必须精确命中流水链断言。
+
 ### 修复 —— 依赖升级暴露的动态属性写法（requests 2.34 自带类型桩）
 
 - **现象**：`dependabot` 的 http-stack 分组 PR（`requests==2.32.3` → `2.34.2`）在 `typecheck` job 变红：

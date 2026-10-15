@@ -171,7 +171,8 @@ $env:TEST_ENV = "prod";    pytest -m api     # → data/config.prod.yaml
 >
 > **但这里有一个不只是"收益有限"的问题——默认分发在本仓库曾经是坏的，实测会失败：**
 > （改造前，30 条 MES 用例时）`pytest -m mes -n 4 --dist load` → **`30 passed, 1 error`，退出码 1**。
-> 报错在 teardown 阶段 `testcases/mes/conftest.py:129` 的会话级数据隔离断言：
+> 报错在 teardown 阶段会话级数据隔离断言（当时在 `testcases/mes/conftest.py:129`，
+> 波 3 给 `factory` teardown 补兜底后移到 `testcases/mes/conftest.py:158`）：
 > `AssertionError: 会话结束时数据没有回到基线`。
 > 根因不是并发竞态，是**分发策略与 fixture 作用域错配**：
 > 数据隔离基线（`baseline_counts`）与收尾回收断言都是 `scope="session"` 的，
@@ -239,7 +240,7 @@ pytest --html=report.html --self-contained-html
 | flaky 治理元测试 | 5 | 波 2 新增：开真 pytest 子进程验证「标了 flaky 的用例首跑失败会被重跑」「真契约断言红了不被重跑吞掉」「隔离区用例退出主门禁且清单被打印」「隔离区能单独跑」 |
 | UI-登录 | 6 | 登录成功、4 种失败场景（参数化）、退出登录 |
 | UI-商品/购物车 | 8 | 列表渲染、加购角标、多件参数化、购物车内容一致性、标题 |
-| 业务-MES 全链路 | 55 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 23 条业务（状态机守卫分支、乐观锁并发、幂等键回放/冲突/失败释放/超长拒绝、并发领料不超卖、流水账实一致、权限矩阵双向断言、令牌校验）+ 24 条认证与密钥（9 条口令来源、15 条令牌生命周期）+ 1 条覆盖率采集元测试（波 2 新增） |
+| 业务-MES 全链路 | 64 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 23 条业务（状态机守卫分支、乐观锁并发、幂等键回放/冲突/失败释放/超长拒绝、并发领料不超卖、流水账实一致、权限矩阵双向断言、令牌校验）+ 24 条认证与密钥（9 条口令来源、15 条令牌生命周期）+ 1 条覆盖率采集元测试（波 2 新增）+ 9 条数据生命周期（波 3 新增：子进程故障注入 ×2、TTL 清理前后行数对照、白名单保护、幂等、模糊项只报告、命名判据、时间戳容错、`verify_clean` 残留复核） |
 | 契约-自动导出 | 224 | 从 FastAPI 自动导出 `docs/openapi.json`（29 operation）并做漂移门禁；schemathesis 属性测试按 spec 生成请求 + 手写契约与自动导出的逐条对照。扫出 6 类真实契约缺陷：DEF-05/06 已修并由正常用例固化，DEF-01~04 共 11 条 `xfail(strict=True)` 钉住 |
 | 契约-登录 | 29 | 用 5 种设计方法推出的 30 条用例（等价类/边界值/判定表/场景法/错误推测），钉住被测服务当前行为并标注 6 个已知缺陷（FIND-01~06） |
 | 数据隔离 | 会话级 1 项 | 会话结束时各表行数与关键数值列合计（库存可用/占用/已发料、流水数量与账面余额）必须回到基线，且流水余额链逐笔自洽（见下方"数据隔离"一节） |
@@ -382,6 +383,38 @@ pytest --html=report.html --self-contained-html
 - **清理不依赖用例正文走完**：`factory` fixture 在 teardown 里回收，`take_material` fixture
   在 teardown 里自动反向退料。断言失败的用例也会把数据还回去，否则一条失败的用例会留下脏数据、
   把后面几条一起带红，最后没人分得清哪个才是真正的失败点。
+
+  teardown 里**回收一定执行**这件事是显式写出来的，不是靠代码顺序碰巧成立：
+  早先是「先断言流水链、再 `cleanup()`」的直线代码，断言一红回收那行就永远走不到，
+  数据留在库里、会话收尾再红一次，真因被第二层噪声盖住。现在两件事互不阻断，
+  回收失败**先打印再原样抛回**（不吞掉），回收完再按登记过的单号/编码回查一遍残留
+  （`DataFactory.verify_clean()`），残留显式报出。
+  > 「兜底真的存在」不靠声明，靠 `testcases/mes/_fault_probe.py` 这条**故意失败**的探针：
+  > 它把流水余额改错、精确命中那条断言，再由 `test_data_lifecycle.py` 用真子进程验
+  > 「回收照样跑了、且没有连带基线漂移」。把它跑在修复前的 conftest 上会**没有**
+  > `[数据回收]` 且出现 `表 work_orders: 基线 0 行 -> 现在 1 行（差 +1）` —— 承重性有红证。
+
+- **跨会话残留靠 TTL 扫**：上面的兜底都只在**进程还活着**时有效。会话被 Ctrl-C / 崩溃 /
+  CI 超时打断，teardown 根本没机会跑；而下次跑的是**另一个库**（session fixture 每次都
+  `mktemp`），于是没人会发现。`scripts/mes_data_ttl.py` 就是给这种残留准备的扫帚：
+
+  ```powershell
+  python scripts/mes_data_ttl.py                      # 干跑，看会删什么（TTL 24h）
+  python scripts/mes_data_ttl.py -n 1                 # 换个 TTL：超过 1 小时
+  python scripts/mes_data_ttl.py --apply              # 真的删
+  python scripts/mes_data_ttl.py --fail-on-lingering  # 清完仍有残留则退出码 3
+  ```
+
+  判据两级，**基线白名单是硬否决**：种子用户 / 种子物料 / `(物料, 仓库)` 键命中即
+  **永不删除，哪怕它已经"过期"**。这一条不是额外保险，而是让"按时间清理"成立的前提 ——
+  种子行的 `created_at` 就是建库那一刻，本来就老于任何 TTL，**只看时间判定，
+  第一次跑清理就会把 5 个种子物料和 5 行种子库存全删掉**。另一级是「认得出是测试数据」：
+  工厂标记正则（`WO-T-XXXXXX-1` 形状）**加上**用例手写编码的显式清单 —— 仓库里有一批
+  用例手写 `FG-TEST-01` / `FG-X` / `MAT-ACL` / `WO-IDEM-*` 这类不含随机标记的编码，
+  纯正则认不出来。**认不出来的过期行不删、只报告**（宁可留着被人看到，也不猜着删）。
+  清理是幂等的：第二次跑命中 0 项、行数不变、不报错；报告里还有一个 `!! 基线行数减少了（误删）`
+  自报字段，它一旦出现就是 bug，报告不许替它遮掩。
+
 - **登记式回收**：用例里直接发请求造的数据（绕开工厂方法的那些）要显式登记，
   漏登记的表现是"用例全绿、会话收尾报差异"。这类差异信息被刻意写成排查方向而不是结论：
 
@@ -406,30 +439,30 @@ pytest --html=report.html --self-contained-html
 > **一个容易看错的点**：`api` 与 `mes`、`login` 三个标记有**重叠** ——
 > `testcases/mes/` 的用例同时打了 `mes` 和 `api`，`testcases/login/` 的同时打了
 > `login` 和 `api`。所以 `-m api` 选到 130 条（47 条接口目录 + 54 条 MES + 29 条登录），
-> **这些数字不能相加**。全量共 369 条 = 47 接口 + 14 UI + 55 MES + 29 登录 + 224 契约。
+> **这些数字不能相加**。全量共 378 条 = 47 接口 + 14 UI + 64 MES + 29 登录 + 224 契约。
 > 契约那 224 条是**独立标记**（`-m contract`），不并入 `api` ——
 > 它们要起本地服务、按 spec 生成请求，属于另一档耗时（约 25 秒），
 > 不适合塞进"日常开发随手跑"的那一组。
 
 ```text
-pytest --collect-only -q                 369 tests collected
+pytest --collect-only -q                 378 tests collected
 
-pytest -m api                            130 passed, 239 deselected in 26.09s
-pytest -m mes                             55 passed, 314 deselected in 25.95s
-pytest -m login                           29 passed, 340 deselected in  2.58s
-pytest -m contract                       213 passed, 145 deselected, 11 xfailed in 18.35s
+pytest -m api                            130 passed, 248 deselected in 53.16s
+pytest -m mes                             64 passed, 314 deselected in 36.42s
+pytest -m login                           29 passed, 349 deselected in  2.61s
+pytest -m contract                       213 passed, 154 deselected, 11 xfailed in 22.02s
 pytest -m ui                             14 failed（本机沙箱限制，见下）
 
-pytest -m api -n 4 --dist loadfile       130 passed in 26.09s
-pytest -m mes -n 4 --dist loadfile        55 passed in 17.20s
+pytest -m api -n 4 --dist loadfile       130 passed in 24.96s
+pytest -m mes -n 4 --dist loadfile        64 passed in 18.98s
 CONTRACT_MAX_EXAMPLES=50 pytest -m contract
                                          213 passed, 11 xfailed in 58.05s  # 放大 6.25 倍样例，耗时 ×2.6
 
-pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 4371 450 90%（89.70%）
-pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 4301 847 80%（80.31%）
+pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 4811 499 90%（89.63%）
+pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 4719 1147 76%（75.69%）
                                         Required test coverage of 40% reached（退出码 0）
 python scripts/export_openapi.py --check 两份 spec [一致]（退出码 0）
-python -m mypy                          Success: no issues found in 74 source files
+python -m mypy                          Success: no issues found in 79 source files
 python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增 10 条）；
                                         「代理回退判据」那条缺陷用例仍未补，补上后会先变 22/23（故意红）
 ```
@@ -439,7 +472,7 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
 > 属**环境限制，不是用例缺陷**。所以这一行给的是实跑结果而不是"通过"。
 > 上一版文档在这里写的 `14 passed ... in 27.26s` 采自另一台机器。
 >
-> **覆盖率门禁挂在 `-m api` 上，而它现在有 80.31%，不是"全量"的 89.70%**：
+> **覆盖率门禁挂在 `-m api` 上，而它现在有 75.69%，不是"全量"的 89.63%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
 > "选取集完全相同"那句当时是对的，现在错了）。
 > 门禁仍定在 40：它要拦的是**退化**，不是卡住当前值。
