@@ -16,12 +16,12 @@
 
 ## 1. 前置：解释器与 PYTHONPATH
 
-本仓库的 363 条基线用例里，`testcases/contract/test_schemathesis_properties.py` 依赖
+本仓库的 400 条基线用例里，`testcases/contract/test_schemathesis_properties.py` 依赖
 **schemathesis**，而 schemathesis 并不在 venv 的 site-packages 里，它放在仓库外的
 `work/pylibs` 目录（纯目录，未安装）。因此：
 
-- 不带 PYTHONPATH 跑收集，只有 **175 条 + 1 个收集 ERROR**；
-- 带上 PYTHONPATH 才是 **363 条**（再加平台层自测）。
+- 不带 PYTHONPATH 跑收集，只有 **311 条 + 1 个收集 ERROR**；
+- 带上 PYTHONPATH 才是 **400 条**（再加平台层自测 99 条，全量 499 条）。
 
 ```powershell
 chcp 65001 > $null

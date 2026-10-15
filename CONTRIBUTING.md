@@ -20,7 +20,7 @@ pip install -r requirements.txt
 playwright install chromium
 
 # 4. 跑一遍确认环境是好的
-pytest -m "not ui" -q          # 期望 92 passed
+pytest -m "not ui" -q          # 期望 454 passed, 11 xfailed（共收集 465 条）
 ```
 
 `setup.ps1` 把这四步包成了一个脚本，新机器上可以直接跑它。
@@ -31,7 +31,7 @@ pytest -m "not ui" -q          # 期望 92 passed
 
 ### 1. 有两组用例钉的是"当前行为"，不是"正确行为"
 
-`-m login` 的 29 条与 `-m mes` 的 30 条里，有一部分断言刻意钉住了被测服务的
+`-m login` 的 29 条与 `-m mes` 的 64 条里，有一部分断言刻意钉住了被测服务的
 **已知缺陷**（登录服务的 6 个缺陷见 `login_app/app.py` 顶部注释与
 `docs/login-contract.md` 的"契约 vs 实现"差异表）。
 
@@ -48,7 +48,7 @@ pytest -m "not ui" -q          # 期望 92 passed
 因为那些模块是"和用例放在一起的测试辅助件"，不是可安装的包。
 
 改成包结构会让 import 路径变长、`conftest` 的 `pytest_plugins` 语义变化，
-而收益只是"看起来更规范"。要动它，请先确保 `-m mes` 仍 30 passed、`-m login` 仍 29 passed。
+而收益只是"看起来更规范"。要动它，请先确保 `-m mes` 仍 64 passed、`-m login` 仍 29 passed。
 
 后面那个 `# noqa: E402` 也是必需的（import 不在文件顶部），别删。
 
@@ -81,7 +81,7 @@ $env:TEST_ENV = "prod"; pytest     # → data/config.prod.yaml
 加载器是 `common/config.py` 的 `get_config()`。**改动它时有一条硬约束**：
 `TEST_ENV` 未设置时的返回值必须与旧实现（`common/yaml_util.get_config()`
 直接读 `config.yaml`）逐字节一致。这条已经有回归保护——
-CI 里跑的就是默认档的 92 条用例。
+CI 里跑的就是默认档的 465 条用例。
 
 ---
 

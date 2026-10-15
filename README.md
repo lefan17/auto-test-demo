@@ -79,9 +79,9 @@ playwright install chromium
 > pip install -r requirements.lock
 > ```
 >
-> 两个文件的分工：`requirements.txt` 是**人维护的**直接依赖（13 个，全部 `==` 钉死版本），
+> 两个文件的分工：`requirements.txt` 是**人维护的**直接依赖（15 个，全部 `==` 钉死版本），
 > 它是唯一真值来源；`requirements.lock` 是 `pip-compile` 生成的**完整传递依赖树**
-> （123 行，含 anyio / certifi / urllib3 / greenlet 等几十个间接包）。
+> （225 行，含 anyio / certifi / urllib3 / greenlet 等几十个间接包）。
 > 只锁直接依赖的话，传递依赖会随环境漂移——本地和 CI 装的不是同一棵树，
 > 于是"本地绿、CI 红"就会以随机事件的形式出现。
 > 改了 `requirements.txt` 之后要重新生成：
@@ -247,6 +247,8 @@ pytest --html=report.html --self-contained-html
 | 业务-MES 全链路 | 64 | 7 条冒烟（全链路 PENDING→SHIPPED、探针、登录、重复单号、小数精度、金额分位、额外字段）+ 23 条业务（状态机守卫分支、乐观锁并发、幂等键回放/冲突/失败释放/超长拒绝、并发领料不超卖、流水账实一致、权限矩阵双向断言、令牌校验）+ 24 条认证与密钥（9 条口令来源、15 条令牌生命周期）+ 1 条覆盖率采集元测试（波 2 新增）+ 9 条数据生命周期（波 3 新增：子进程故障注入 ×2、TTL 清理前后行数对照、白名单保护、幂等、模糊项只报告、命名判据、时间戳容错、`verify_clean` 残留复核） |
 | 契约-自动导出 | 224 | 从 FastAPI 自动导出 `docs/openapi.json`（29 operation）并做漂移门禁；schemathesis 属性测试按 spec 生成请求 + 手写契约与自动导出的逐条对照。扫出 6 类真实契约缺陷：DEF-05/06 已修并由正常用例固化，DEF-01~04 共 11 条 `xfail(strict=True)` 钉住 |
 | 契约-登录 | 29 | 用 5 种设计方法推出的 30 条用例（等价类/边界值/判定表/场景法/错误推测），钉住被测服务当前行为并标注 6 个已知缺陷（FIND-01~06） |
+| UI-Demo Web / 混合链路 | 20 | 本地 Demo Web 的页面与接口断言 15 条（`test_mes_web_app.py`，不起浏览器）+ 页面操作与接口校验的混合链路 5 条（`test_mes_mixed_flow.py`，用浏览器） |
+| 平台层（qaplat 自测） | 99 | 门禁分层表达式、度量库、覆盖矩阵 registry、报表 CLI 等平台自身的用例（`testcases/platform/`） |
 | 数据隔离 | 会话级 1 项 | 会话结束时各表行数与关键数值列合计（库存可用/占用/已发料、流水数量与账面余额）必须回到基线，且流水余额链逐笔自洽（见下方"数据隔离"一节） |
 
 业务全链路那些用例**不依赖公网**：`testcases/mes/` 的 session 级 fixture 会自己
@@ -342,14 +344,16 @@ pytest --html=report.html --self-contained-html
 | 已登记为用例编号的前缀 | `LC`（30 个编号 / 17 个函数 / 27 个 nodeid） |
 | 一条 nodeid 承载多个编号 | `test_lc22_to_lc25_decision_table` → LC-22、LC-23、LC-24、LC-25 |
 | 未解析（抽到编号却找不到 nodeid） | 0 |
-| 无编号 nodeid（装全依赖 + 波 3 全部合入） | **353**：contract 224、mes 64、api 49、ui 14、login 2 |
+| 无编号 nodeid（装全依赖 + 两条线全部合入） | **472**：contract 224、platform 99、mes 64、api 49、ui 34、login 2 |
 
 > **无编号那一行的数字随收集范围变，写死会过期——三组数字都对，差的是"跑在哪个树"。**
 > 同一台机器上：本机没装 `schemathesis` 时（`test_schemathesis_properties.py` 收集报错）
 > 是 181 条收集 / **154** 条无编号（contract 36、mes 55、api 47、ui 14、login 2）；
 > 在本波工作副本里设 `PYTHONPATH` 指向 `pylibs` 后是 369 条收集 / **342** 条无编号；
 > 合入波 3 全部改动（多出 `test_data_lifecycle.py`、`test_perf_baseline.py`）后是
-> 380 条收集 / **353** 条无编号——上表那一行就是最后这组。**脚本的原始输出才是权威**：
+> 380 条收集 / **353** 条无编号（contract 224、mes 64、api 49、ui 14、login 2）；
+> 再合入 qaplat 与 mes_web 两条线后是 499 条收集 / **472** 条无编号
+> （contract 224、platform 99、mes 64、api 49、ui 34、login 2）——上表那一行就是最后这组。**脚本的原始输出才是权威**：
 > README 只钉"有编号的 30 / 27"这一组，它与装了哪些依赖、树里有哪些文件都无关，不会漂。
 > 复现：`python scripts/case_index.py`（它自己调 `python -m pytest --collect-only` 取 nodeid；
 > 收集不到的只如实报出，不猜）。
@@ -488,21 +492,21 @@ pytest --html=report.html --self-contained-html
 > **一个容易看错的点**：`api` 与 `mes`、`login` 三个标记有**重叠** ——
 > `testcases/mes/` 的用例同时打了 `mes` 和 `api`，`testcases/login/` 的同时打了
 > `login` 和 `api`。所以 `-m api` 选到 132 条（49 条接口目录 + 54 条 MES + 29 条登录），
-> **这些数字不能相加**。全量共 380 条 = 49 接口 + 14 UI + 64 MES + 29 登录 + 224 契约。
+> **这些数字不能相加**。全量共 499 条 = 49 接口 + 34 UI + 64 MES + 29 登录 + 224 契约 + 99 平台层自测。
 > 另有 2 条性能基线用例（`-m perf`）挂在接口目录里，`-m 'api and not perf'` 是 130 条。
 > 契约那 224 条是**独立标记**（`-m contract`），不并入 `api` ——
 > 它们要起本地服务、按 spec 生成请求，属于另一档耗时（约 25 秒），
 > 不适合塞进"日常开发随手跑"的那一组。
 
 ```text
-pytest --collect-only -q                 380 tests collected
+pytest --collect-only -q                 499 tests collected
 
-pytest -m api                            132 passed, 248 deselected in 58.88s
-pytest -m mes                             64 passed, 316 deselected in 35.81s
-pytest -m login                           29 passed, 351 deselected in  2.58s
-pytest -m contract                       213 passed, 156 deselected, 11 xfailed in 18.69s
-pytest -m perf                             2 passed, 378 deselected in  4.53s
-pytest -m ui                             14 passed in 31.11s
+pytest -m api                            132 passed, 367 deselected in 58.88s
+pytest -m mes                             64 passed, 435 deselected in 35.81s
+pytest -m login                           29 passed, 470 deselected in  2.58s
+pytest -m contract                       213 passed, 275 deselected, 11 xfailed in 18.69s
+pytest -m perf                             2 passed, 497 deselected in  4.53s
+pytest -m ui                             14 passed in 31.11s（合入前；合流后收集 34 条，未重跑）
 
 pytest -m api -n 4 --dist loadfile       132 passed in 26.28s
 pytest -m mes -n 4 --dist loadfile        64 passed in 18.89s
@@ -515,11 +519,16 @@ pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 4947 1183 76%�
 pytest -m mes --cov=mock_server --cov-report=term          TOTAL 1374 235 83%
 pytest -m login --cov=login_app --cov-report=term          TOTAL   88  13 85%
 python scripts/export_openapi.py --check 两份 spec [一致]（退出码 0）
-python -m mypy                          Success: no issues found in 88 source files
+python -m mypy                          Success: no issues found in 109 source files
 python scripts/check_gate_policy.py     策略文档、test.yml、pytest.ini 三者一致（退出码 0）
 python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增 10 条）；
                                         「代理回退判据」那条缺陷用例仍未补，补上后会先变 22/23（故意红）
 ```
+
+> **合流（qaplat / mes_web）之后的采集口径**：上面这一块里，各行的 `passed` 数与耗时是**合入前**的实测。
+> 合流只新增了打 `platform` 与 `ui` 标记的用例，除 `ui` 之外的各 marker 选取集没有变化，因此那些 `passed` 数仍然成立；
+> 变化的是全量总数（380 → 499）、各行的 `deselected`（`--collect-only` 可复现），以及 `-m ui`（收集数 14 → 34 条）。
+> 覆盖率的四行与并行/放大那两行**未**在合流后重跑，仍是合入前的值。
 
 > **`-m ui` 的 14 条这次真的在本机跑绿了**（`14 passed in 31.11s`）。
 > 上一版文档在这里写的是 `14 failed`，失败点是 setup 阶段的
