@@ -179,10 +179,13 @@ KNOWN_TEST_PREFIXES = ("WO-IDEM-", "WO-CONFLICT-", "WO-DUP-", "WO-FIXED-", "WO-L
 7f74b6f  fix(mes): 用例失败时不再让断言挤掉数据回收
 739bf59  feat(mes): 新增按 TTL 清理跨会话残留测试数据的入口
 9024f82  test(mes): 用真实子进程给数据生命周期五项验收钉住证据
+acd7619  docs(mes): 波 3 数据生命周期的交付说明与文档同步
+e6668ce  docs(mes): 校正 handoff 里的行号与文件规模
+11da8da  docs(mes): 验收 3 的 TTL 证据补上清理前后逐表对照
 ```
 
-（本文件的落盘提交是紧随其后的 `docs(mes): 波 3 数据生命周期的交付说明与文档同步`。
-它自己的 SHA 不写在这里 —— 写进来就会因为 amend 而立刻过期。）
+列表截止到 `11da8da`；把本行所在提交自己的 SHA 写进来会因下一次 amend 立刻过期，
+所以要一份最新的请直接跑 `git log --oneline 0e61618..HEAD`。
 
 ---
 
