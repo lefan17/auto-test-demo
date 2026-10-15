@@ -1,0 +1,11 @@
+# 压测可选依赖：只在需要跑 `perf/` 时安装，**故意不写进 requirements.txt**。
+#
+# 为什么分开：requirements.txt 是"跑测试/跑 CI 门禁"的依赖集，CI 每个 job 都会
+# `pip install -r requirements.txt`。locust 会拖进 gevent / geventhttpclient /
+# pyzmq / pywin32 一整套并发与网络栈，其中 gevent 会 monkey-patch 标准库。
+# 把它并进门禁依赖，等于让所有单元测试与 UI 测试都跑在一个被 monkey-patch 的
+# 运行时上 —— 那是给"测试环境"引入压测工具的风险，代价远大于收益。
+# 想跑压测的人显式装这一份即可。
+#
+# 版本与验证过的环境一致（locust 2.46.7 / Python 3.12）。
+locust==2.46.7
