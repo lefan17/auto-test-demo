@@ -60,8 +60,10 @@ files = [
     "mock_server",
     "login_app",
     "ui",
+    "mes_web",
     "scripts",
     "perf",
+    "qaplat",
 ]
 # 只对**缺少类型标注的第三方库**放行，不对本仓库代码放行。
 # 写这段时的前提是「本仓库 import 的库都没有 py.typed 标记」。该前提已被上游打破：

@@ -68,3 +68,13 @@ pytest-of-*/
 .mypy_cache/
 .ruff_cache/
 .piptools-cache/
+
+# 平台层产物目录：度量数据库（qaplat.db）、每轮采集的原始 JSON、HTML 报表。
+# 这些是「本机跑过什么」的历史状态，在新机器上必然是空的；提交进来只会制造
+# 无意义的 diff，更糟的是会让 CI 上的 flaky 检测对着别人的历史数据下结论。
+qaplat/.cache/
+
+# Demo Web（`mes_web`）的运行日志目录：uvicorn 的 stdout/stderr 会落到
+# `.tmp/mes_web/mes_web-<port>.log`。上面那条 `.tmp/` 是宽泛规则，已被收窄过一次；
+# 这里按目录显式再列一遍，免得将来有人把 `.tmp/` 改成只忽略子项时把日志漏出去。
+.tmp/mes_web/
