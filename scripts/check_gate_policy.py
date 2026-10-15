@@ -10,11 +10,17 @@
 判定规则（全部读文件本身，不解析人写的注释，也不依赖 YAML 库）：
   1. 文档的 job 集合 == workflow 的 job 集合，多一个少一个都算错。
   2. 文档声明的 job 超时 == workflow 的 timeout-minutes。
-  3. 文档声明的阻塞性 == workflow 里到底有没有 continue-on-error 步骤：
-     没有 → 必须写「阻塞」；有 → 必须写「部分放行」或「不阻塞」。
-     这里刻意不区分「部分放行」与「不阻塞」：一个 job 里哪几步算判定步骤，
-     只有写策略的人说得清；脚本能客观担保的是「有放行步骤」这个事实没有被文档漏记。
-  4. workflow 里每一个 continue-on-error 步骤，都必须在文档的放行清单里逐条登记（双向，多登记也算错）。
+  3. 文档声明的阻塞性 == workflow 里到底有没有 continue-on-error，且**按层级分档**：
+     都没有 → 必须写「阻塞」；只有 step 级 → 可写「部分放行」或「不阻塞」；
+     有**job 级** → 只能写「不阻塞」。
+     分档是因为两者语义不同：job 级豁免让整条 job 的失败都不改变流水线结论（真·非阻塞），
+     step 级豁免只放过那一步、job 本身仍会红（顶多算部分放行）。把 job 级漏判成「无豁免」，
+     后果是文档写「不阻塞」被误判成错，或者更糟——文档写「阻塞」反而假绿。
+     只有 step 级那一档不细分「部分放行/不阻塞」：一个 job 里哪几步算判定步骤，
+     只有写策略的人说得清；脚本能客观担保的是「有豁免」这个事实没有被文档漏记。
+  4. workflow 里每一条 continue-on-error（job 级与 step 级各算一条），
+     都必须在文档的放行清单里逐条登记（双向，多登记也算错）。job 级那条的步骤名写作
+     `<job 级>`，因为它并不属于任何一步。
   5. 文档的 marker 表覆盖 pytest.ini 声明的全部 marker（双向，写多一个也是错）。
 
 用法::
@@ -48,6 +54,16 @@ BLOCKING = "阻塞"
 PARTIAL = "部分放行"
 NOT_BLOCKING = "不阻塞"
 RELAXED_VALUES = (PARTIAL, NOT_BLOCKING)
+# job 级 continue-on-error 是整条 job 的豁免，比 step 级更强：它连 job 自己的红都不算数，
+# 所以只接受「不阻塞」这一种写法。
+JOB_LEVEL_VALUES = (NOT_BLOCKING,)
+# job 级豁免不属于任何一步，在放行清单里用这个固定的伪步骤名登记。
+JOB_LEVEL_STEP = "<job 级>"
+# 4 空格＝job 级键，8 空格＝step 级键。两者都是真豁免；更深的缩进是 run 块内的脚本内容，
+# 不是 YAML 键。注释行（`#` 开头）在两种缩进下都必须排除——test.yml 的 505/666 行就是
+# 靠 `#` 讲 continue-on-error 的注释，把它们当成豁免会让脚本凭空造出两个假门禁。
+JOB_LEVEL_COE_RE = re.compile(r" {4}continue-on-error:\s*(\S+)\s*$")
+STEP_LEVEL_COE_RE = re.compile(r" {8}continue-on-error:\s*(\S+)\s*$")
 
 
 @dataclass(frozen=True)
@@ -58,6 +74,29 @@ class WorkflowJob:
     line: int
     timeout: int | None
     relaxed_steps: tuple[tuple[str, str, int], ...]  # (步骤名, continue-on-error 值, 行号)
+    relaxed_job: tuple[str, int] | None  # job 级 continue-on-error：(值, 行号)；没有则 None
+
+    @property
+    def relaxed_entries(self) -> tuple[tuple[str, str, int], ...]:
+        """这个 job 的全部豁免，job 级排在前面（它比任何 step 级豁免都强）。"""
+        entries: list[tuple[str, str, int]] = []
+        if self.relaxed_job is not None:
+            value, line = self.relaxed_job
+            entries.append((JOB_LEVEL_STEP, value, line))
+        entries.extend(self.relaxed_steps)
+        return tuple(entries)
+
+    @property
+    def blocking_choices(self) -> tuple[str, ...]:
+        """这个 job 的豁免形态允许文档写哪几种阻塞性。"""
+        if self.relaxed_job is not None:
+            return JOB_LEVEL_VALUES
+        return RELAXED_VALUES if self.relaxed_steps else (BLOCKING,)
+
+    @property
+    def exemptions_text(self) -> str:
+        """给报错信息用的豁免清单描述。"""
+        return "、".join(f"第 {line} 行 `{step}`" for step, _, line in self.relaxed_entries) or "无"
 
 
 @dataclass(frozen=True)
@@ -126,10 +165,13 @@ def parse_pytest_markers(text: str) -> dict[str, int]:
 
 
 def parse_workflow(text: str) -> dict[str, WorkflowJob]:
-    """按缩进解析 job、job 级 timeout 与带 continue-on-error 的步骤。
+    """按缩进解析 job、job 级 timeout、job 级与 step 级的 continue-on-error。
 
     刻意不 import yaml：这份 workflow 只有 job/step 两层结构，而 YAML 1.1 会把顶格的
     `on:` 解析成布尔 True、还要为此写补偿代码；缩进扫描反而更直白，也让本脚本零依赖。
+
+    豁免有两种缩进，必须都认：job 级（4 空格）与 step 级（8 空格）。只认后者会让 job 级
+    豁免隐形，于是文档写「不阻塞」被误判、写「阻塞」反而假绿。
     """
     lines = text.splitlines()
     try:
@@ -150,9 +192,14 @@ def parse_workflow(text: str) -> dict[str, WorkflowJob]:
         stop = starts[position + 1][0] - 1 if position + 1 < len(starts) else len(lines)
         timeout: int | None = None
         relaxed: list[tuple[str, str, int]] = []
+        relaxed_job: tuple[str, int] | None = None
         step_name = "<步骤外>"
         for offset, raw in enumerate(lines[line_no - 1 : stop]):
             current = line_no + offset
+            # 注释行在两种缩进下都可能出现，而 test.yml 恰恰用注释解释 continue-on-error：
+            # 不排掉它们，脚本会把注释读成真豁免，凭空造出门禁事实。
+            if raw.lstrip().startswith("#"):
+                continue
             named = re.fullmatch(r" {6}- name:\s*(.+)", raw)
             if named:
                 step_name = named.group(1).strip()
@@ -164,10 +211,20 @@ def parse_workflow(text: str) -> dict[str, WorkflowJob]:
                 found = re.fullmatch(r" {4}timeout-minutes:\s*(\d+)", raw)
                 if found:
                     timeout = int(found.group(1))
-            coefficient = re.fullmatch(r" {8}continue-on-error:\s*(\S+)", raw)
-            if coefficient:
-                relaxed.append((step_name, coefficient.group(1), current))
-        jobs[name] = WorkflowJob(name=name, line=line_no, timeout=timeout, relaxed_steps=tuple(relaxed))
+            job_level = JOB_LEVEL_COE_RE.fullmatch(raw)
+            if job_level:
+                relaxed_job = (job_level.group(1), current)
+                continue
+            step_level = STEP_LEVEL_COE_RE.fullmatch(raw)
+            if step_level:
+                relaxed.append((step_name, step_level.group(1), current))
+        jobs[name] = WorkflowJob(
+            name=name,
+            line=line_no,
+            timeout=timeout,
+            relaxed_steps=tuple(relaxed),
+            relaxed_job=relaxed_job,
+        )
     return jobs
 
 
@@ -275,18 +332,19 @@ def check_blocking(workflow_jobs: dict[str, WorkflowJob], doc_jobs: dict[str, Do
     for name in sorted(set(workflow_jobs) & set(doc_jobs)):
         job = workflow_jobs[name]
         doc = doc_jobs[name]
-        expected = RELAXED_VALUES if job.relaxed_steps else (BLOCKING,)
+        expected = job.blocking_choices
         if doc.blocking not in expected:
-            relaxed_text = "、".join(f"第 {line} 行 `{step}`" for step, _, line in job.relaxed_steps) or "无"
+            scope = "job 级" if job.relaxed_job is not None else "step 级"
             report.bad(
                 f"{name} 阻塞性",
-                f"文档第 {doc.line} 行写「{doc.blocking}」，但 workflow 里{'有' if job.relaxed_steps else '没有'} "
-                f"continue-on-error（{relaxed_text}）→ 应写「{' 或 '.join(expected)}」",
+                f"文档第 {doc.line} 行写「{doc.blocking}」，但 workflow 里有 {scope} continue-on-error"
+                f"（{job.exemptions_text}）→ 应写「{' 或 '.join(expected)}」",
             )
         else:
             report.ok(
                 f"{name} 阻塞性",
-                f"文档「{doc.blocking}」→ workflow 放行步骤 {len(job.relaxed_steps)} 个",
+                f"文档「{doc.blocking}」→ workflow 豁免 {len(job.relaxed_entries)} 条"
+                f"{'（含 job 级）' if job.relaxed_job is not None else ''}",
             )
         if doc.timeout != job.timeout:
             report.bad(
@@ -300,7 +358,7 @@ def check_blocking(workflow_jobs: dict[str, WorkflowJob], doc_jobs: dict[str, Do
 def check_relaxed_steps(workflow_jobs: dict[str, WorkflowJob], doc_relaxed: list[DocRelaxed], report: Report) -> None:
     print("\n== ③ continue-on-error 放行清单 ==")
     actual = {
-        (job.name, step): (value, line) for job in workflow_jobs.values() for step, value, line in job.relaxed_steps
+        (job.name, step): (value, line) for job in workflow_jobs.values() for step, value, line in job.relaxed_entries
     }
     declared = {(item.job, item.step): item for item in doc_relaxed}
 
