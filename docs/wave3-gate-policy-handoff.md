@@ -1,4 +1,4 @@
-﻿# 波 3 · P2-4 分层门禁策略显式化 —— 交接说明
+# 波 3 · P2-4 分层门禁策略显式化 —— 交接说明
 
 **一句话**：把「哪个测试层阻塞 PR、哪一步放行」从 `test.yml` 的 `continue-on-error` 行里搬出来写成
 `docs/质量门禁策略.md`，并新增 `scripts/check_gate_policy.py` 让文档与 workflow / `pytest.ini`
@@ -452,7 +452,7 @@ testcases\api\_probes\probe_flaky_rerun.py R.                            [100%]
   DESELECTED testcases/api/_probes/probe_quarantine.py::test_probe_quarantined_known_failure
 这些用例既没有被删除，也没有被判为通过——它们的红不再计入本次门禁。
 单独运行：pytest -m quarantine
-账本（供周报统计）：C:\Users\lefan\DSH_project\接口自动化_3\work\w3-gate\reports\flaky-governance.json
+账本（供周报统计）：C:\Users\lefan\DSH_project\接口自动化_3\work\int3\reports\flaky-governance.tmp.json
 =========================== rerun test summary info ===========================
 RERUN testcases/api/_probes/probe_flaky_rerun.py::test_probe_flaky_rerun_would_pass_second_time
 PASSED testcases/api/_probes/probe_flaky_rerun.py::test_probe_flaky_rerun_would_pass_second_time
