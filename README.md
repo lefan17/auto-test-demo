@@ -483,31 +483,36 @@ pytest --html=report.html --self-contained-html
 > 采集时间 **2026-10-15**（Windows 本机，Python 3.12.10，公网接口用例受网络影响会有波动）。
 > **一个容易看错的点**：`api` 与 `mes`、`login` 三个标记有**重叠** ——
 > `testcases/mes/` 的用例同时打了 `mes` 和 `api`，`testcases/login/` 的同时打了
-> `login` 和 `api`。所以 `-m api` 选到 130 条（47 条接口目录 + 54 条 MES + 29 条登录），
-> **这些数字不能相加**。全量共 378 条 = 47 接口 + 14 UI + 64 MES + 29 登录 + 224 契约。
+> `login` 和 `api`。所以 `-m api` 选到 132 条（49 条接口目录 + 54 条 MES + 29 条登录），
+> **这些数字不能相加**。全量共 380 条 = 49 接口 + 14 UI + 64 MES + 29 登录 + 224 契约。
+> 另有 2 条性能基线用例（`-m perf`）挂在接口目录里，`-m 'api and not perf'` 是 130 条。
 > 契约那 224 条是**独立标记**（`-m contract`），不并入 `api` ——
 > 它们要起本地服务、按 spec 生成请求，属于另一档耗时（约 25 秒），
 > 不适合塞进"日常开发随手跑"的那一组。
 
 ```text
-pytest --collect-only -q                 378 tests collected
+pytest --collect-only -q                 380 tests collected
 
-pytest -m api                            130 passed, 248 deselected in 53.16s
-pytest -m mes                             64 passed, 314 deselected in 36.42s
-pytest -m login                           29 passed, 349 deselected in  2.61s
-pytest -m contract                       213 passed, 154 deselected, 11 xfailed in 22.02s
+pytest -m api                            132 passed, 248 deselected in 63.34s
+pytest -m mes                             64 passed, 316 deselected in 36.58s
+pytest -m login                           29 passed, 351 deselected in  2.59s
+pytest -m contract                       213 passed, 156 deselected, 11 xfailed in 24.92s
+pytest -m perf                             2 passed, 378 deselected in  4.25s
 pytest -m ui                             14 failed（本机沙箱限制，见下）
 
-pytest -m api -n 4 --dist loadfile       130 passed in 24.96s
-pytest -m mes -n 4 --dist loadfile        64 passed in 18.98s
+pytest -m api -n 4 --dist loadfile       132 passed in 26.26s
+pytest -m mes -n 4 --dist loadfile        64 passed in 18.15s
 CONTRACT_MAX_EXAMPLES=50 pytest -m contract
-                                         213 passed, 11 xfailed in 58.05s  # 放大 6.25 倍样例，耗时 ×2.6
+                                         213 passed, 11 xfailed in 57.40s  # 放大 6.25 倍样例，耗时 ×2.3
 
-pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 4811 499 90%（89.63%）
-pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 4719 1147 76%（75.69%）
+pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 5039 558 89%（88.93%）
+pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 4947 1183 76%（76.09%）
                                         Required test coverage of 40% reached（退出码 0）
+pytest -m mes --cov=mock_server --cov-report=term          TOTAL 1374 235 83%
+pytest -m login --cov=login_app --cov-report=term          TOTAL   88  13 85%
 python scripts/export_openapi.py --check 两份 spec [一致]（退出码 0）
-python -m mypy                          Success: no issues found in 79 source files
+python -m mypy                          Success: no issues found in 88 source files
+python scripts/check_gate_policy.py     策略文档、test.yml、pytest.ini 三者一致（退出码 0）
 python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增 10 条）；
                                         「代理回退判据」那条缺陷用例仍未补，补上后会先变 22/23（故意红）
 ```
@@ -517,7 +522,7 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
 > 属**环境限制，不是用例缺陷**。所以这一行给的是实跑结果而不是"通过"。
 > 上一版文档在这里写的 `14 passed ... in 27.26s` 采自另一台机器。
 >
-> **覆盖率门禁挂在 `-m api` 上，而它现在有 75.69%，不是"全量"的 89.63%**：
+> **覆盖率门禁挂在 `-m api` 上，而它现在有 76.09%，不是"全量"的 88.93%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
 > "选取集完全相同"那句当时是对的，现在错了）。
 > 门禁仍定在 40：它要拦的是**退化**，不是卡住当前值。
