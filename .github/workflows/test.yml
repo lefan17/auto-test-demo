@@ -329,6 +329,20 @@ jobs:
       - name: 运行登录契约自动化（本地被测服务）
         run: pytest -m login --alluredir=allure-results
 
+      # qaplat 平台层自测：被测对象是**平台自己**——registry 的用例/operation 归属、
+      # metrics_store 的落盘格式、gate_layers 的门禁分层、drift_report_cli 的命令行契约，
+      # 实测 99 条（testcases/platform/ 下 4 个文件）。
+      # 它必须独立成 step，理由与上面的 contract 那一步同理：这 99 条
+      # **完全落在宿主层之外**——`-m "platform and (api or ui or mes or login or contract or perf)"`
+      # 的收集数是 0，所以 `-m api` / `-m mes` / `-m login` 三步一条都跑不到它。
+      # 没有这一步，这 99 条在 CI 上永远不会被执行（改前实测：本文件全文没有
+      # `platform` 字样），平台层会静默腐烂——而门禁脚本 check_gate_policy.py 自己
+      # 就住在 scripts/ 下、由 qaplat 平台层提供分层与归属判定，它坏了没人知道。
+      # 不设 continue-on-error：平台层红了就是真坏了，必须拦住流水线。
+      # 不开 -n：只有 4 个测试文件，worker 启动开销大于收益（与 mes / login 同理）。
+      - name: 运行 qaplat 平台层自测（平台自身，独立于宿主层，失败即阻塞）
+        run: pytest -m platform --alluredir=allure-results
+
       # ---------------------------------------------------------------------
       # 用例编号 → nodeid 的索引与禅道上报（波 3 · P2-1 新增）
       # ---------------------------------------------------------------------
@@ -437,6 +451,7 @@ jobs:
             echo "| UI 用例 | \`pytest -m ui\`（失败不阻断） |"
             echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端，刻意串行） |"
             echo "| 登录契约 | \`pytest -m login\`（本地被测服务，钉住当前行为含 6 个已知缺陷） |"
+            echo "| qaplat 平台层 | \`pytest -m platform\`（平台自身：registry 覆盖矩阵、metrics_store、gate_layers、报表 CLI） |"
             echo "| 数据隔离 | \`data_isolation_check\`：会话结束时各表行数与库存合计必须回到基线 |"
             echo "| flaky 治理 | 只有显式标了 \`flaky\` 的 33 条会在指纹匹配时重跑 1 次（裸 \`@pytest.mark.flaky\` 全仓 0 处，无全局 \`--reruns\`；账本见 \`flaky-governance\` artifact） |"
             echo "| 报告 | 见下方 Artifacts 里的 \`allure-report\` |"
