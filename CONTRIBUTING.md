@@ -56,19 +56,25 @@ pytest -m "not ui" -q          # 期望 454 passed, 11 xfailed（共收集 465 �
 
 `pytest-xdist` 默认按**用例**分发（`--dist load`）。这个仓库**不能**用它：
 
-实测 `-m mes -n 4 --dist load` → `30 passed, 1 error`，退出码 1。报错在
-`testcases/mes/conftest.py:129` 的会话级数据隔离断言上（数据没回到基线）。
+实测 `-m mes -n 4 --dist load` → `64 passed, 1 error`，退出码 1（连跑 8 次里 7 次复现，
+1 次侥幸全绿——**别把"这次没红"当成没问题**）。报错在
+`testcases/mes/conftest.py:158` 的会话级数据隔离断言上（数据没回到基线）。
 原因是数据隔离基线是 `scope="session"` 的，按用例分发会把同一个文件的用例
 拆到不同 worker，"A worker 的收尾快照"对不上"B worker 造的脏数据"。
 
 按文件分发（`--dist loadfile`）会让一个文件整体落在同一个 worker，作用域闭合。
 
-### 4. `mock_server/*` 的覆盖率永远是 0%，这是正常的
+### 4. `mock_server/*` 的覆盖率靠 launcher 才采得到，改启动方式等于把它打回 0%
 
 它由 fixture 以 subprocess 拉起（`testcases/mes/mock_server_ctl.py`），
-而 coverage 只统计自己所在进程。**不要**为了让这个数字好看去改覆盖率配置——
-那会让门禁变成一个说谎的指标。要让它们进统计，需要给子进程加
-`-m coverage run --parallel-mode` 再 `coverage combine`，这是独立的工程任务。
+而 coverage 只统计自己所在进程。**波 2 · P1-3 之后这里已经不是 0% 了**（`-m mes` 下 83%），
+靠的是 `scripts/service_launcher.py`：它在进程内装一个"吸收信号"的 handler 再
+`runpy.run_module(<服务模块>)`，让 uvicorn 关闭时正常返回、走到 `atexit`、分片落盘
+（`.coveragerc` 的 `[run] parallel = true`），由 pytest-cov 在 session 结束时自动 combine。
+
+所以**改 `mock_server_ctl.py` 的启动方式时必须保住这条路径**：绕过 launcher 直接
+`python -m mock_server.run`、或者把 `stop()` 改回直接 `terminate()`，覆盖率就会掉回 0%
+而且**不会报错**——只会让门禁变成一个说谎的指标。
 
 ### 5. 环境分层用 `TEST_ENV`，默认档必须与历史行为一致
 
@@ -95,6 +101,14 @@ python -m ruff check .            # 期望 All checks passed!
 python -m ruff format --check .   # 期望 N files already formatted
 python -m mypy                    # 期望 Success: no issues found
 ```
+
+> **`traffic-replay/` 是例外**：它自带 `pytest.ini`、不受根 `ruff.toml` 管辖
+> （根配置用 `extend-exclude` 排除它，理由见下），也没进 `mypy` 的 `files` 列表。
+> 改到它时单独跑：
+>
+> ```powershell
+> cd traffic-replay; python -m pytest -q   # 期望 173 passed
+> ```
 
 > **pre-commit 在本机装不上**：安装需要创建虚拟环境，受限环境会拒绝
 > `ensurepip`（`PermissionError: [WinError 5]`）。`.pre-commit-config.yaml`
@@ -166,5 +180,8 @@ python -m login_app.run --host 127.0.0.1 --port 5001
 | `login_app/` | 被测的登录服务（含 6 个刻意保留的缺陷） |
 | `ui/pages/` | Playwright 页面对象 |
 | `scripts/` | 工程化脚本（提交信息校验等） |
+| `qaplat/` | 平台层：门禁分层、度量库、覆盖矩阵、报表（自带用例在 `testcases/platform/`，`-m platform`） |
+| `mes_web/` | 本地 Demo Web（UI 混合链路的被测站点，不依赖公网） |
+| `traffic-replay/` | 流量回放（批次 2）：**独立子项目**，自带 `pytest.ini` 与 `conftest.py`，要在它自己的目录里跑 |
 | `tools/` | 一次性排查/安装辅助脚本 |
 | `docs/` | 设计说明、契约差异表、测试有效性说明 |

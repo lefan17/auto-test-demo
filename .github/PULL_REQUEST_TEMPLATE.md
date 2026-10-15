@@ -15,9 +15,11 @@
 这一栏是重点，请贴**你实际跑过的命令与输出**（可以截尾，但要有结论行与退出码）。
 不要只写"本地跑过了"。可用的几条：
 
-  python -m pytest -o addopts= -q -m "not ui" -p no:warnings   # 期望 92 passed
-  python -m pytest -o addopts= -q -m mes                       # 期望 30 passed
+  python -m pytest -o addopts= -q -m "not ui" -p no:warnings   # 期望 454 passed, 11 xfailed
+  python -m pytest -o addopts= -q -m mes                       # 期望 64 passed
   python -m pytest -o addopts= -q -m login                     # 期望 29 passed
+  python -m pytest -q -m platform                              # 期望 99 passed
+  cd traffic-replay && python -m pytest -q                     # 期望 173 passed（自带 pytest.ini）
   python -m ruff check .            && python -m ruff format --check .
   python -m mypy
   docker compose -f docker-compose.yml config --quiet          # 只做静态校验
@@ -43,7 +45,7 @@
 <!--
 删掉本节或留空 = 没有改动 testcases/** 的断言。
 
-背景：本仓库的 `-m login`（29 条）与 `-m mes`（30 条）里有一部分断言
+背景：本仓库的 `-m login`（29 条）与 `-m mes`（64 条）里有一部分断言
 **刻意钉住了被测服务的已知缺陷**（见 docs/login-contract.md 的差异表）。
 所以在改动之前，请先回答：你看的是哪张表、结论是什么？
 -->
