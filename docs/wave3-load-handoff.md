@@ -40,20 +40,23 @@
 
 读写权重合计 read 8 : write 2；关掉退料后是 8 : 1。
 
-### 2.2 `perf/run_load.py`（701 行，新增）：梯度定义 / 拐点判定 / 结果落盘
+### 2.2 `perf/run_load.py`（704 行，新增）：梯度定义 / 拐点判定 / 结果落盘
 
 | 位置 | 内容 |
 |---|---|
 | `perf/run_load.py:50-54` | `DEFAULT_USERS = "5,10,20,50"`、`DEFAULT_RUN_TIME = "20s"`、`DEFAULT_REPEAT = 2`、`DEFAULT_PORT = 8321`、`DEFAULT_USER_CLASSES = "MesApiUser"` |
 | `perf/run_load.py:58-62` | 拐点判据常量：`P95_DEGRADE_RATIO = 2.0` / `P99_ABSOLUTE_MS = 1000.0` / `ERROR_RATE_LIMIT = 0.01` / `SERVER_ERROR_LIMIT = 0` / `RPS_SATURATION_GAIN = 0.20` |
-| `perf/run_load.py:232-280` | `_start_service()`：起被测服务（走 `scripts/service_launcher.py`）、`--concurrency-window-ms 0`、`/readyz` 就绪等待 |
-| `perf/run_load.py:283-298` | `_warm_token_pool()`：预热令牌，避免 N 个用户同时跑 PBKDF2 造 CPU 风暴 |
-| `perf/run_load.py:370-463` | `_run_one()`：拼 locust 命令、抓 `Aggregated` 原始行、解析 CSV |
-| `perf/run_load.py:505-568` | `_detect_knee()`：三类拐点判定 |
-| `perf/run_load.py:655-658` | 落 `samples.jsonl`（逐轮明细） |
-| `perf/run_load.py:691-692` | 落 `summary.json`（梯度聚合 + 拐点 + 回收证据） |
+| `perf/run_load.py:68-119` | `class ServiceHandle` + `stop()`：优雅 → 强杀三段式回收，并留下 `graceful/terminated/killed/exit_code/port_free_after` 证据 |
+| `perf/run_load.py:160-181` | `_port_is_free()`：循环 12 次 × 0.25s 用 `bind` 判定端口真的释放了 |
+| `perf/run_load.py:184-213` | `_py_libs_dir()` / `_pythonpath()`：把 `pylibs`、`pylibs\win32`、`pylibs\win32\lib` 拼进子进程 PYTHONPATH |
+| `perf/run_load.py:235-283` | `_start_service()`：起被测服务（走 `scripts/service_launcher.py`）、`--concurrency-window-ms 0`、`/readyz` 就绪等待 |
+| `perf/run_load.py:286-301` | `_warm_token_pool()`：预热令牌，避免 N 个用户同时跑 PBKDF2 造 CPU 风暴 |
+| `perf/run_load.py:373-466` | `_run_one()`：拼 locust 命令、抓 `Aggregated` 原始行、解析 CSV |
+| `perf/run_load.py:508-571` | `_detect_knee()`：三类拐点判定 |
+| `perf/run_load.py:658-661` | 落 `samples.jsonl`（逐轮明细） |
+| `perf/run_load.py:694-695` | 落 `summary.json`（梯度聚合 + 拐点 + 回收证据） |
 
-拐点判定三条独立结论（`perf/run_load.py:527-567` 原文）：
+拐点判定三条独立结论（`perf/run_load.py:528-570` 原文）：
 
 ```python
 baseline = gradients[0]
@@ -84,18 +87,18 @@ for prev, grad in zip(gradients, gradients[1:], strict=False):  # 吞吐饱和
         verdict["throughput_plateau_users"] = grad["users"]
 ```
 
-**稳定性拐点为什么不和延迟拐点合并**（`perf/run_load.py:541-543` 注释原文）：
+**稳定性拐点为什么不和延迟拐点合并**（`perf/run_load.py:544-546` 注释原文）：
 两者本仓库实测**不同档**（P95 在 10u 就翻倍，服务端 5xx 到 50u 才出现），合并会丢掉
 "哪一档开始出错"这个对容量规划更硬的信息。
 
 **为什么另设 `SERVER_ERROR_LIMIT = 0`**：50u 的总错误率只有 0.02%~0.06%，按 1% 门限
 "看着完全健康"，但其中是服务端 500（`database is locked`）。总错误率会把它稀释掉，
-所以把 5xx/连接重置单独数出来，阈值取 0。`_parse_server_faults()`（`perf/run_load.py:348`）
+所以把 5xx/连接重置单独数出来，阈值取 0。`_parse_server_faults()`（`perf/run_load.py:351`）
 按 `_failures.csv` 的 `Occurrences` 列**求和**而不是数行，同一错误在 CSV 里聚合在一行。
 
 ### 2.3 `perf/run_load.ps1`（98 行，新增）：一键入口
 
-`param` 在 `perf/run_load.ps1:17-27`；PYTHONPATH/PYTHONUTF8 注入在 `:46-56`；转发给 runner 在 `:80-94`。
+`param` 在 `perf/run_load.ps1:17-27`；PYTHONPATH/PYTHONUTF8 注入在 `:44-56`；转发给 runner 在 `:80-94`。
 
 ### 2.4 `requirements-perf.txt`（新增，1 行有效内容）
 
@@ -270,8 +273,8 @@ P95 波动 12.3%。所以绝对 RPS 有批次间噪声（后台进程、CPU 频�
 - `exit_code=0`：**必须**经 `scripts/service_launcher.py` 起服务才能拿到。直接
   `python -m mock_server.run` 实测 exit=3（uvicorn 关闭时把原 handler 装回去再
   `signal.raise_signal` 重发，默认处置直接终止进程），经 launcher 吸收重发信号后走完
-  正常 shutdown 返回 0。原因写在 `perf/run_load.py:235-239`。
-- `port_free_after=true`：`_port_is_free()`（`perf/run_load.py:157-178`）循环 12 次 × 0.25s
+  正常 shutdown 返回 0。原因写在 `perf/run_load.py:238-242`。
+- `port_free_after=true`：`_port_is_free()`（`perf/run_load.py:160-181`）循环 12 次 × 0.25s
   用 `bind` 判定，任一成功即算释放。**不能用非阻塞 `connect_ex`**：TIME_WAIT 上它返回
   10035(WSAEWOULDBLOCK) 会被误判成"仍被占用"。
 - 事后核对：`netstat -ano | Select-String ":8321|:8322" | Select-String "LISTENING"` 无输出
@@ -358,8 +361,7 @@ pwsh -File perf/run_load.ps1 -UserClasses LoginOnlyUser -Label login -Port 8341
 # 缺依赖时脚本会打印：& "<python>" -m pip install -r requirements-perf.txt
 ```
 
-**夜间 job**：`.github/workflows/test.yml` 新增非阻塞 job `perf-nightly`
-（`continue-on-error: true`，且 `if` 限定 `workflow_dispatch` / `schedule`，push/PR **不触发**），
+**夜间 job**：`.github/workflows/test.yml` 新增非阻塞 job `perf`（`continue-on-error: true`，且 `if` 限定 `workflow_dispatch` / `schedule`，push/PR **不触发**），
 跑同样的 4 梯度批次并上传 `reports/perf/` 为 artifact。触发方式＝在 Actions 页面手动
 `Run workflow`，或跟现有 `schedule: cron "0 18 * * 1"` 一起在周一 UTC 18:00 自动跑。
 
@@ -376,7 +378,7 @@ pwsh -File perf/run_load.ps1 -UserClasses LoginOnlyUser -Label login -Port 8341
 | `docs/wave3-load-handoff.md` | **新增** | 本文件 |
 | `README.md` | 修改 | 新增「容量压测」小节：与竞态用例的分工、一键命令、本机实测数字、同机局限。未改动任何既有小节 |
 | `CHANGELOG.md` | 修改 | `## [未发布]` 下新增 `### 新增 —— 容量压测与拐点判定（波 3）` |
-| `.github/workflows/test.yml` | 修改 | 新增 job `perf-nightly`（`continue-on-error: true`，仅 `workflow_dispatch`/`schedule`，上传 `reports/perf/`）。既有 6 个 job 一行未动 |
+| `.github/workflows/test.yml` | 修改 | 新增 job `perf`（`continue-on-error: true`，仅 `workflow_dispatch`/`schedule`，上传 `reports/perf/`）。既有 6 个 job 一行未动 |
 | `pyproject.toml` | **未改** | `[tool.mypy] files` 不含 `perf`，故裸 `python -m mypy` 不检查 `perf/`。**建议**合入时把 `"perf"` 加进该列表（本任务把它列为可动边界之外，未擅自改；证据命令用 `python -m mypy perf`） |
 
 没有改动：`testcases/`、`apis/`、`mock_server/`、`common/`、根 `conftest.py`、`pytest.ini`、
@@ -400,7 +402,7 @@ ruff 版本必须与 CI 一致：`ruff 0.16.10`（`.github/workflows/test.yml:60
 
 ## 9. 未验证项清单（接手的人请自己确认）
 
-1. **CI（ubuntu-latest）上 `perf-nightly` 从未真跑过**。本机是 Windows，`perf/run_load.ps1`
+1. **CI（ubuntu-latest）上 `perf` job 从未真跑过**。本机是 Windows，`perf/run_load.ps1`
    是 PowerShell 脚本、CI 用的是裸 `python perf/run_load.py`；locust 在 Linux + gevent 下的
    行为、以及 SQLite `busy_timeout` 在 CI runner 磁盘上的表现都**未验证**。job 设了
    `continue-on-error: true`，即使红也不会拦流水线。
