@@ -534,15 +534,26 @@ exit=0
 `docs/zentao-case-map.json`（`git check-ignore` 未命中）。当前 `cases` 为空对象——**这是正确状态**，
 不是漏填。
 
-### 5.3 建议但**不在**本子任务边界内的改动（留给你判断）
+### 5.3 外壳接线（第二份任务书授权后**已落地**，见 §8）
 
-| 文件 | 建议 | 理由 |
+第一轮交付时这五条被判为「不在子任务边界内」，调度者随后把其中四条正式授权，
+已在同一工作副本上追加三条提交（`13c6ecb` / `0751b09` / `a716c22`）。逐条结果：
+
+| 文件 | 落地内容 | 理由 |
 |---|---|---|
-| `.github/workflows/test.yml` | 加一个 step：`python -m pytest scripts/test_report_to_zentao_stub.py` | `pytest.ini` 的 `testpaths = testcases` 不会自动收集 `scripts/` 下的测试，不加就没人跑。**不会改变全仓收集数**（181 不变） |
-| `.github/workflows/test.yml` | `python scripts/case_index.py --verify` | 编号解析不出 nodeid 时 exit 3，可当门禁 |
-| `.env.example` | 加 `ZENTAO_URL` / `ZENTAO_TOKEN` / `ZENTAO_PRODUCT` 三个**占位符** | 与仓库既有的三条规则一致（只从 .env 或 CI secret 注入、值是占位符、已存在的环境变量优先）。`.env.example` 不在本子任务的可动清单里，故未动 |
-| `README.md` | 设计要点补一节「用例编号 → 禅道」 | `README.md:404` 那段「这些数字不能相加」旁边是天然落点 |
-| `CHANGELOG.md` | 新增一节（波 3 · 禅道对接） | 与波 1/波 2 的写法一致 |
+| `README.md` | 新增一节 `### 用例编号与禅道上报的起点`（`:323`） | 紧贴「用例设计与编号」主题，不塞进「当前实测结果」 |
+| `CHANGELOG.md` | 新增一节 `### 新增 —— 用例编号到禅道用例 ID 的上报链路（波 3 · P2-1）`（`:143`） | 与波 1/波 2 的写法一致；按授权要求插在 flaky 治理（波 2）之后、依赖升级修复之前 |
+| `.github/workflows/test.yml` | `test` job 内两个 step：桩测试 + `case_index.py --verify` | `pytest.ini` 的 `testpaths = testcases` 不会自动收集 `scripts/` 下的测试，不加就没人跑。**不改变全仓收集数**（181 不变） |
+| `.env.example` | 追加 `ZENTAO_URL` / `ZENTAO_TOKEN` / `ZENTAO_PRODUCT` 三个**占位符** | 与仓库既有的三条规则一致（只从 .env 或 CI secret 注入、值是占位符、已存在的环境变量优先） |
+
+**接线时必须守住的四条**（已核对，可逐条 grep 复核）：未新开 job；未改任何
+`timeout-minutes`（`test` job 仍是 `45`）；未新增或改动任何 `continue-on-error`；
+新增两步都不设 `PYTHONPATH`（设了收集数会从 181 涨到 369）。
+
+**未做、也不该由本轮做的一条**：`docs/质量门禁策略.md` 与 `scripts/check_gate_policy.py`
+（P2-4 的交付物）在本工作副本里**不存在**，本轮没有创建也没有修改它们。因此上面两个新
+step **尚未登记进策略文档**——按 P2-4 侧的三方一致性校验（策略文档 × test.yml ×
+pytest.ini）口径，这是需要转告的一条，不能默认已被覆盖。
 
 ### 5.4 **不需要**改的东西
 
@@ -586,30 +597,114 @@ exit=0
 
 ---
 
-## 7. 提交记录（在 `0e61618` 之上 4 条，一事一提交）
+## 7. 提交记录（在 `0e61618` 之上 7 条，一事一提交）
+
+### 第一轮：四项交付物（4 条）
 
 ```
-> git log --oneline 0e61618..HEAD
-HEAD   docs: 补波 3 禅道对接的交接文档   ← 本提交（SHA 随 amend 变化，故不写死）
+> git log --oneline 0e61618..ce8bdec
+ce8bdec docs: 补波 3 禅道对接的交接文档
 cefff5c feat(scripts): 新增禅道上报脚本与本地桩服务测试
 6c888d5 chore(docs): 新增用例编号到禅道用例 ID 的映射表
 0a327e7 feat(scripts): 新增用例编号到 nodeid 的索引脚本
 ```
 
+### 第二轮：外壳接线（3 条，第二份任务书授权）
+
+```
+> git log --oneline ce8bdec..HEAD
+a716c22 chore: 登记禅道上报凭据的占位符
+0751b09 ci: 把禅道桩测试与用例编号索引自检接入 CI
+13c6ecb docs: 补用例编号与禅道上报链路的说明
+```
+
 ```
 > git diff --stat 0e61618..HEAD
- docs/wave3-zentao-handoff.md          | 600 余行（本文件，行数随 amend 变动，故不写死）
- docs/zentao-case-map.json             |  11
- scripts/case_index.py                 | 532
- scripts/report_to_zentao.py           | 453
- scripts/test_report_to_zentao_stub.py | 431
- 5 files changed, 2000+ insertions(+)
+ .env.example                          |  15 +
+ .github/workflows/test.yml            |  24 ++
+ CHANGELOG.md                          |  38 +++
+ README.md                             |  45 +++
+ docs/wave3-zentao-handoff.md          | 615 ++++++++++++++++++++++++++++++++++
+ docs/zentao-case-map.json             |  11 +
+ scripts/case_index.py                 | 532 +++++++++++++++++++++++++++++
+ scripts/report_to_zentao.py           | 453 +++++++++++++++++++++++++
+ scripts/test_report_to_zentao_stub.py | 431 +++++++++++++++++++++++
+ 9 files changed, 2164 insertions(+)
 ```
 
 纯新增，零删除——`testcases/**` 一个字都没改（§5.4）。
 
-产物（`reports/case-index.json`、`reports/zentao-payload.json`）**不在**上面这五行里——
+产物（`reports/case-index.json`、`reports/zentao-payload.json`）**不在**上面这九行里——
 它们被 `.gitignore:10` 的 `reports/` 忽略，是运行产物不是交付物。
 
 `origin/main` 停在 `c2098f5`（波 1 时的旧远端），`git rev-list --left-right --count origin/main...HEAD`
-= `0  37` —— **本轮没有 push，也不该 push**：交付是「整合清单 + 4 条本地提交」，由调度者决定怎么合。
+= `0  37` —— **本轮没有 push，也不该 push**：交付是「整合清单 + 本地提交」，由调度者决定怎么合。
+
+---
+
+## 8. 第二轮（外壳接线）的验收证据
+
+### 8.1 数字可复现
+
+`python scripts/case_index.py`（无 `PYTHONPATH`）→ **exit 0**，关键行：
+
+```
+测试函数: 148
+收集到 nodeid: 181
+有编号的 nodeid: 27
+无编号的 nodeid: 154   <-- 覆盖缺口，不掩饰
+编号条目: 30（已解析 30 / 未解析 0）
+去重编号: 30    带编号的函数: 17
+无编号 nodeid 按套件: mes: 55, api: 47, contract: 36, ui: 14, login: 2
+一条 nodeid 承载多个编号（缺陷定位精度到此为止）:
+  testcases/login/test_login_contract.py::test_lc22_to_lc25_decision_table  ->  LC-22、LC-23、LC-24、LC-25
+```
+
+同一命令加 `PYTHONPATH=work/pylibs`（即 README 表里 353 那组的来源）→ **exit 0**：
+`收集到 nodeid: 369` / `无编号的 nodeid: 342` / `无编号 nodeid 按套件: contract: 224, mes: 55, api: 47, ui: 14, login: 2`
+（224+55+47+14+2 = 342 ✓）。README 表的 353 那组来自已合入波 3 全部改动的整合区（380 条收集）。
+
+README 只钉**与依赖和文件集无关**的那组：`LC` 30 个编号 / 17 个函数 / 27 个带编号 nodeid / 未解析 0。
+
+### 8.2 `testcases/**` 零改动
+
+```
+> git diff --name-only 0e61618..HEAD -- testcases     → 0 行（输出为空）
+> git diff --stat 0e61618..HEAD -- testcases          → 输出为空
+> git status --porcelain -- testcases                 → 0 行
+```
+
+### 8.3 `--verify` 门禁的反向验证（证明它真的会红）
+
+`--testcases-dir` 指向工作副本之外的路径会撞上 `scan()` 里
+`path.relative_to(REPO_ROOT)`（`scripts/case_index.py:253`）而抛 `ValueError`——这是**用法限制
+而非门禁失效**，为把反向验证做成受控实验，改用整树复制：
+
+1. `robocopy <工作副本> <_tmp\gate> /MIR`（排除 `.git`/`.venv` 等）；在副本里给
+   `testcases/login/test_login_contract.py` 顶部插入一行必然 `ImportError` 的 import
+   ——模拟「用例被改名/挪走、编号还留在文档里」，该模块收集不到任何 nodeid。
+2. 在副本里跑 `python scripts/case_index.py --verify` → **exit 3**，stderr：
+   ```
+   未解析编号 30 条
+   ```
+   产物里 30 条 `unresolved` 逐条列出（`LC-01` … `LC-30`）。
+3. 在**完好的**工作副本里跑同一命令 → **exit 0**。
+4. 还原证据：副本目录已删除；主仓 `git status --porcelain` 只剩 4 个已提交文件的
+   ` M`（提交前状态），`git diff --stat -- scripts/case_index.py` 输出为空
+   ——`case_index.py` 与 HEAD 逐字节一致，没有留下任何临时退化改动。
+
+### 8.4 桩测试真跑
+
+```
+> python -m pytest scripts/test_report_to_zentao_stub.py -q
+scripts\test_report_to_zentao_stub.py .........                          [100%]
+9 passed in 8.20s      → exit 0
+```
+
+### 8.5 三条裸自检（仓库根，不带参数）
+
+```
+> python -m ruff check .          → All checks passed!                    exit=0
+> python -m ruff format --check . → 97 files already formatted            exit=0
+> python -m mypy                  → Success: no issues found in 77 source files   exit=0
+```
