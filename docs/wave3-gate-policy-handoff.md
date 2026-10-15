@@ -36,8 +36,8 @@
 | 二、job 表 | 31-55 | 机器可读段 `<!-- gate-policy:jobs -->`（33/42 行）。6 行 ×（job / 阻塞性 / 预算分钟 / 触发时机 / 失败找谁 / 判定步骤） |
 | 三、marker 表 | 57-93 | 机器可读段 `<!-- gate-policy:markers -->`（64/76 行）。9 行，并写明 **marker 分三类**：`api`/`ui`/`mes`/`login`/`contract` 是宿主层，`smoke`/`regression` 是横切标签，`flaky`/`quarantine` 是质量治理标签 |
 | 四、放行清单 | 95-114 | 机器可读段 `<!-- gate-policy:continue-on-error -->`（100/105 行）。**全 workflow 只有 2 处豁免，逐条登记**；并写明「加严是单向的」 |
-| 五、flaky / quarantine 承接 | 116-174 | 见下文第五节 |
-| 六、UI 不阻塞的理由/风险/退出条件 | 176-228 | 见下文第六节 |
+| 五、flaky / quarantine 承接 | 116-174 | 见本 handoff 第五节 |
+| 六、UI 不阻塞的理由/风险/退出条件 | 176-228 | 见本 handoff 第七节 |
 | 七、预算时长 | 230-246 | 6 个 job 的 `timeout-minutes` 与实测参照 |
 | 八、怎么用、怎么改 | 248-267 | 脚本用法与「改 workflow 必须同一 PR 改文档」的流程 |
 
@@ -66,7 +66,7 @@
 
 ### 3. `.github/workflows/test.yml`（+8 行，只加严）
 
-在 `pre-commit` job 的 `pre-commit run --all-files` **之后**新增一步（`test.yml:610-617`）：
+在 `pre-commit` job 的 `pre-commit run --all-files` **之后**新增一步（`test.yml:610-616`）：
 
 ```yaml
       - name: 校验门禁策略与 workflow 一致
@@ -101,9 +101,9 @@ runner 启动与 Python 安装的钱；挂在已有的阻塞 job 里，它天然
 | **A. 把 job 名 `security` 改成 `security-scan`，不动文档** | 4 项：`FAIL job security \| 策略文档第 39 行声明了它，但 workflow 里已经没有这个 job`；`FAIL job security-scan \| workflow 第 519 行有它，策略文档的 job 表里没有——新增 job 必须同时登记策略`；`FAIL security / pip-audit（扫描锁定的依赖树） \| 策略文档第 104 行登记了它，但 workflow 里没有这一步（或它已不再放行）`；`FAIL security-scan / pip-audit（扫描锁定的依赖树） \| workflow 第 546 行是 continue-on-error: true，策略文档的放行清单里没有登记` | 1 |
 | **B. 只删掉 UI 那步的 `continue-on-error: true`，不动文档** | 2 项：`FAIL test 阻塞性 \| 文档第 38 行写「部分放行」，但 workflow 里没有 continue-on-error（无）→ 应写「阻塞」`；`FAIL test / 运行 UI 自动化（失败不阻断流水线） \| 策略文档第 103 行登记了它，但 workflow 里没有这一步（或它已不再放行）` | 1 |
 | **C. 把某个阻塞 job 改成非阻塞**（实验：给 `lint` 的 `ruff check` 那步加 `continue-on-error: true`，不动文档） | 2 项：`FAIL lint 阻塞性 \| 文档第 36 行写「阻塞」，但 workflow 里有 continue-on-error（第 65 行 'ruff check（lint 规则）'）→ 应写「部分放行 或 不阻塞」`；`FAIL lint / ruff check（lint 规则） \| workflow 第 65 行是 continue-on-error: true，策略文档的放行清单里没有登记` | 1 |
+| **D. 把 `pytest.ini` 里的 marker `quarantine` 改名成 `quarantined`，不动文档** | 2 项：`FAIL marker quarantine | 策略文档第 75 行声明了它，但 pytest.ini 里没有这个 marker`；`FAIL marker quarantined | pytest.ini 第 31 行声明了它，策略文档的 marker 表里没有归属——这个 marker 没人管` | 1 |
 | **正常态** | `[gate-policy] 通过：策略文档、test.yml、pytest.ini 三者一致。` | 0 |
-
-三次实验都用**先备份、后还原**做的，还原后 `git status --porcelain` 为空。
+四次实验都用**先备份、后还原**做的，还原后 `git status --porcelain` 只剩本 handoff 文档自身的未提交改动、`restored-identical: True`。
 
 > 注意 B 与 C 的方向是相反的、且都红，这是刻意的：脚本不是「只防放宽」，它防的是**两边说的不是同一件事**。
 > 删掉 UI 豁免等于**加严**了门禁，但文档还写着「部分放行」，照样红——因为那时候文档在说谎。
@@ -120,7 +120,7 @@ runner 启动与 Python 安装的钱；挂在已有的阻塞 job 里，它天然
 | `contract` | 宿主层（契约） | `pytest -m contract -q` | 同上 | 阻塞 | 224 | 先跑 `export_openapi.py --check` 漂移门禁，再跑属性测试；样例数钉死 `CONTRACT_MAX_EXAMPLES=8` |
 | `mes` | 宿主层（业务全链路） | `pytest -m mes` | 同上 | 阻塞 | 55 | fixture 自起本地 FastAPI + SQLite，不依赖外网，**CI 上最稳的一组**；刻意串行 |
 | `login` | 宿主层（登录契约） | `pytest -m login` | 同上 | 阻塞 | 29 | 自起本地服务；绿＝「行为没有变化」，不等于「服务没问题」 |
-| `ui` | 宿主层（浏览器） | `pytest -m ui` | 同上 | **不阻塞** | 14 | 打公网 `saucedemo.com`；理由/风险/退出条件见第六节（`docs/质量门禁策略.md:176-228`） |
+| `ui` | 宿主层（浏览器） | `pytest -m ui` | 同上 | **不阻塞** | 14 | 打公网 `saucedemo.com`；理由/风险/退出条件见本 handoff 第七节（`docs/质量门禁策略.md:176-228`） |
 | `smoke` | **横切标签** | 由 `api` / `mes` / `ui` 三步顺带跑到 | 同上 | 随宿主层 | 36 | **CI 里没有 `-m smoke` 这一步**，它是给人用的快速选择器 |
 | `regression` | **横切标签** | 同上 | 同上 | 随宿主层 | 64 | **CI 里没有 `-m regression` 这一步**，发版前本地跑 |
 | `flaky` | **质量治理标签** | 不单独跑，经 `NETWORK_FLAKY` 别名挂在 `api` 层 33 条上 | 随宿主层 | 随宿主层 | 33 | 重跑只对第三方抖动指纹生效，见第五节 |
@@ -180,14 +180,14 @@ NETWORK_FLAKY = pytest.mark.flaky(reruns=1, only_rerun=NETWORK_JITTER_PATTERNS)
 > ⚠️ **对 workflow 摘要文案的订正**：`test.yml:417` 原文写 `pytest -m flaky 只对第三方抖动指纹重跑`，
 > 这句与实测机制不符——**CI 里没有 `-m flaky` 这一步**，重跑生效靠的是 `NETWORK_FLAKY` + `-m api` 那一步。
 > 已在新策略文档里按机制写准（第三节 marker 表把 `flaky` 的「谁在跑它」写成「不单独跑，经 `NETWORK_FLAKY` 挂在 api 层」）。
-> **未改 `test.yml:417` 的摘要文案**：改它属于「订正注释」而非本任务的四项交付物，留作未验证项/后续小改（见第七节）。
+> **未改 `test.yml:417` 的摘要文案**：改它属于「订正注释」而非本任务的四项交付物，留作未验证项/后续小改（见第十节第 3 条）。
 
 ### 5.2 `quarantine`：退出门禁，但必须点名（`docs/质量门禁策略.md:146-174`）
 
 实测现状（根 `conftest.py`）：
 
 - `pytest_collection_modifyitems`（`conftest.py:126-144`）：**非** quarantine 运行里把带 `quarantine` 标记的用例从 items 移除，并调用标准钩子 `pytest_deselected`，让它们计入 pytest 的 "N deselected" 计数。**这不是判为通过**。
-- `pytest_terminal_summary`（`conftest.py:201-213`）：终端摘要逐条打印清单。原始输出见第六节验收 4。
+- `pytest_terminal_summary`（`conftest.py:201-213`）：终端摘要逐条打印清单。原始输出见第九节验收 4。
 - 同一份清单写进 `reports/flaky-governance.json` 的 `quarantined` / `quarantined_count`（`conftest.py:165-186`），CI 上打进流水线摘要。
 
 策略三条：
@@ -282,7 +282,7 @@ cd C:\Users\lefan\DSH_project\接口自动化_3\work\w3-gate
 |---|---|---|
 | `python scripts/check_gate_policy.py` | `[gate-policy] 通过：策略文档、test.yml、pytest.ini 三者一致。` | **0** |
 | `python -m ruff check .` | `All checks passed!` | **0** |
-| `python -m ruff format --check .` | `95 files already formatted` | **0** |
+| `python -m ruff format --check .` | `96 files already formatted` | **0** |
 | `python -m mypy` | `Success: no issues found in 75 source files` | **0** |
 | `python scripts/check_commit_msg.py .git/COMMIT_EDITMSG`（对 6 条提交逐条） | 6 条全部按中文 conventional commit 写入，均通过 | 0 |
 | `pytest --markers -q -o addopts=`（正则计数 9 个 marker 行） | 9 个 marker 仍全部被 pytest 认到 | — |
@@ -313,7 +313,7 @@ cd C:\Users\lefan\DSH_project\接口自动化_3\work\w3-gate
 **验收标准 1（与 `test.yml` 逐条对照）**见上文第四节的 marker 表与 job 表；对照命令即 `python scripts/check_gate_policy.py`，
 它输出的每一行 `PASS` 都带两边行号，就是那张对照表本身。
 
-**验收标准 2（反向验证）**：见第三节 A / B / C 三个实验，全部 `exit=1`，实验后均还原（`restored-identical: True`，`git status --porcelain` 为空）。
+**验收标准 2（反向验证）**：见第三节 A / B / C / D 四个实验，全部 `exit=1`，实验后均还原（`restored-identical: True`，`git status --porcelain` 为空）。
 
 **验收标准 3（正常态绿）**：`exit=0`，见上。
 
