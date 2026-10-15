@@ -1,0 +1,116 @@
+{
+  "_comment": "合成流量：正常 GET、带分页的列表、POST 创建，以及含手机号/身份证/邮箱/token 的请求。响应带时间戳与自增 ID。",
+  "exchanges": [
+    {
+      "recorded_at": "2025-01-06T02:15:03.120000+00:00",
+      "request": {
+        "method": "GET",
+        "url": "http://api.demo.local/api/v1/users/1001",
+        "headers": {
+          "Accept": "application/json",
+          "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMDAxIiwibmFtZSI6IkxpIE1pbmciLCJpYXQiOjE3MzYxMjMzMDN9.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+          "User-Agent": "traffic-replay/fixture"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json; charset=utf-8", "Server": "nginx"},
+        "body_json": {
+          "code": 0,
+          "data": {
+            "id": 1001,
+            "name": "李敏",
+            "phone": "13800138000",
+            "email": "limin@example.com",
+            "id_card": "110101199003078515",
+            "created_at": "2024-11-02T08:31:00Z",
+            "updated_at": "2025-01-06T02:15:03Z"
+          },
+          "trace_id": "b7c1e0f2-3a4d-4c9e-9b21-8f7a6d5e4c30"
+        },
+        "elapsed_ms": 42.5
+      },
+      "tags": {"env": "staging", "biz": "user"}
+    },
+    {
+      "recorded_at": "2025-01-06T02:15:04.880000+00:00",
+      "request": {
+        "method": "GET",
+        "url": "http://api.demo.local/api/v1/users?page=2&size=20&keyword=13800138000",
+        "headers": {"Accept": "application/json"}
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body_json": {
+          "code": 0,
+          "data": {
+            "page": 2,
+            "size": 20,
+            "total": 137,
+            "items": [
+              {"id": 1021, "name": "王强", "phone": "13912345678", "created_at": "2024-12-01T10:00:00Z"},
+              {"id": 1022, "name": "赵静", "phone": "13600001111", "created_at": "2024-12-02T11:20:00Z"}
+            ]
+          }
+        },
+        "elapsed_ms": 88.0
+      },
+      "tags": {"env": "staging", "biz": "user", "kind": "list"}
+    },
+    {
+      "recorded_at": "2025-01-06T02:16:11.005000+00:00",
+      "request": {
+        "method": "POST",
+        "url": "http://api.demo.local/api/v1/users",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Request-Token": "sk-9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c",
+          "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9.3vT9c0mQ2xJ7pK1sY8uW5nR4bE6dF0gH2iL9oP3aQ7k"
+        },
+        "body_json": {
+          "name": "陈晨",
+          "phone": "13711112222",
+          "email": "chenchen@corp.example.cn",
+          "id_card": "310101198802145318",
+          "bank_card": "6222021234567890",
+          "address": "上海市浦东新区世纪大道100号"
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {"Content-Type": "application/json", "Location": "/api/v1/users/1002"},
+        "body_json": {
+          "code": 0,
+          "data": {"id": 1002, "created_at": "2025-01-06T02:16:11Z"},
+          "server_time": "2025-01-06T02:16:11.004Z"
+        },
+        "elapsed_ms": 133.75
+      },
+      "tags": {"env": "staging", "biz": "user", "kind": "write"}
+    },
+    {
+      "recorded_at": "2025-01-06T02:17:40.500000+00:00",
+      "request": {
+        "method": "GET",
+        "url": "http://api.demo.local/api/v1/admin/audit-log?from=2025-01-01&to=2025-01-06",
+        "headers": {"Accept": "application/json", "X-Trace-Id": "5f2b9c11aa4e"}
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body_json": {
+          "code": 0,
+          "data": {
+            "items": [
+              {"seq": 90001, "actor": "13800138000", "action": "login", "at": "2025-01-06T02:00:00Z"},
+              {"seq": 90002, "actor": "13912345678", "action": "export", "at": "2025-01-06T02:10:00Z"}
+            ]
+          }
+        },
+        "elapsed_ms": 210.25
+      },
+      "tags": {"env": "staging", "biz": "admin", "kind": "list", "noisy": "true"}
+    }
+  ]
+}

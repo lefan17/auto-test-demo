@@ -476,6 +476,50 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
   pre-commit 刻意不取当时的 latest（4.7.0）：这个 job 是验证配置有没有腐烂，
   钉在已知可用版本上，红色才只反映配置本身。
 
+### 新增 —— 三批次合一：qaplat 平台层、mes_web 混合链路、traffic-replay 流量回放
+
+这一批把此前分散在三个仓库/目录里的三条交付物并进同一个仓库。此前 `main` 上
+没有它们的任何痕迹（工作区里以未跟踪文件存在，等于零版本控制保护）。
+
+- **平台层 `qaplat/`（批次 1）**（`c6e91f3`）：契约驱动的测试平台自身——门禁分层
+  （`gate.py` 的 SMOKE / PR / NIGHTLY / RELEASE 四层与 `marker_expr`）、度量库
+  `metrics.py`、覆盖矩阵 `registry.py`、报表 CLI `cli.py`，配套 99 条自测在
+  `testcases/platform/`。分层表达式被 `testcases/platform/test_gate_layers.py` 逐字钉死。
+- **`mes_web/` + UI 混合链路（批次 3）**（`219d3e9`）：本地 Demo Web 作为被测站点，
+  20 条用例（15 条页面与接口断言不起浏览器 + 5 条真浏览器混合链路），页面对象在
+  `ui/pages/mes_web_pages.py`。
+- 两条线带来的配置并集（`336206c`）：`pyproject.toml` 的 mypy `files` 加 `mes_web` /
+  `qaplat`，`pytest.ini` 加 `platform` / `covers` 两个 marker，`.gitignore` 加
+  `qaplat/.cache/` 与 `.tmp/mes_web/`。
+- **平台层接进 CI**（`09e94bd`）：`test` job 新增独立 step 跑 `pytest -m platform`，
+  **不设** `continue-on-error`。它必须独立成 step，因为这 99 条完全落在其它宿主层之外
+  （`-m "platform and (api or ui or mes or login or contract or perf)"` 收集数为 0），
+  改前 workflow 全文没有 `platform` 字样。同时把两个新 marker 登记进
+  `docs/质量门禁策略.md`（`scripts/check_gate_policy.py` 双向校验，写多一个也是错）。
+- **流量回放 `traffic-replay/`（批次 2）**：录制端（流量源、脱敏、入库）、
+  回放端（并发回放、比对）、差异分类与风险排序三部分，173 条用例。它是**独立子项目**：
+  自带 `pytest.ini`（marker `recorder` / `replay` / `analyze`，与根仓库 12 个零重叠）
+  和自己的 `conftest.py`，因此根 `pytest`（`testpaths = testcases`）收不到它，
+  由 `test` job 里 `working-directory: traffic-replay` 的独立 step 跑，同样不设豁免。
+- **根 `ruff.toml` 用 `extend-exclude` 排除 `traffic-replay`**，而不是 `exclude`：
+  `replay/model.py` 用了 py312 才有的 `type JsonValue = ...` 类型别名语句，而根配置声明
+  `target-version = "py310"`；而 ruff 的 `exclude` 是**替换**默认排除表（会把 `.tox` /
+  `.nox` / `node_modules` 一起顶掉，实测 `.tox` 并不在 `.gitignore` 里），
+  `extend-exclude` 才是追加。配 `force-exclude = true` 让 pre-commit 那种
+  "显式传文件名"的调用形式也一并跳过。
+- **文档同步到整合后实测值**（`9c2597c` + 本条目所属提交）：全量收集 380 → 499、
+  无编号 nodeid 353 → 472、`python -m mypy` 88 → 109 source files；
+  `docs/质量门禁策略.md` 里 22 处指向 workflow 的行号引用按语义锚点重新求值修正
+  （这些都是上游历史漂移造成的既有陈旧，不是本次改动引入的）。
+- **覆盖率两行是重跑后的真值**：`--cov=.` 的分母多了 `qaplat/`（9 个模块）与
+  `mes_web/`（3 个模块），所以 `-m "not ui"` 由 88.89% 变 **83%**（7095 statements）、
+  `-m api` 由 76.09% 变 **61.60%**（7003 statements，门禁仍定在 40）。
+  `traffic-replay/` 的 28 个文件**不进**这个分母——它自带 rootdir，且
+  `analyze/` `recorder/` `replay/` 都没有 `__init__.py`（靠 `conftest.py` 插 `sys.path`）。
+- **`perf` 与 `testcases/mes/test_token_lifecycle.py` 的既知问题不变**：
+  `-m mes -n 4 --dist load`（按用例分发）仍会因会话级数据隔离断言报 1 个 error，
+  这是 `CONTRIBUTING.md` 第 3 条要求必须配 `--dist loadfile` 的原因，不是新缺陷。
+
 ---
 
 ## 2026-10-13

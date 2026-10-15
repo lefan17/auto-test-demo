@@ -1,5 +1,18 @@
 # Ruff 配置：代码检查和格式化。
 # 装了 charliermarsh.ruff 扩展后，保存文件会自动按这里的规则格式化。
+#
+# 批次 2（traffic-replay）是自成一体的子项目：它自带 pytest.ini 与 conftest.py，
+# 不参与根仓库的 marker 体系，也故意保持零耦合并入（不改它一行源码去迎合根 lint）。
+# 它内部有一处 py312 专有语法（replay/model.py 的 `type JsonValue = ...`），
+# 而本文件的 target-version 是 py310，一旦让根配置管到它就会立刻报 invalid-syntax。
+# 因此整目录排除。这里必须用 extend-exclude 而不是 exclude：ruff 的 exclude 是**替换**默认排除表，
+# 写成 exclude = ["traffic-replay"] 会把 .tox / .nox / .direnv / node_modules 等默认忽略目录一起顶掉，
+# 而 .gitignore 并没有覆盖它们（实测 .tox 不在 .gitignore 里），于是 CI 的 `ruff check .` 会去读那些目录。
+# extend-exclude 是**追加**，默认表原样保留，本次只多排除一个 traffic-replay，语义完全等价。
+# force-exclude 让 pre-commit 那种「显式传文件名」的调用形式也一并跳过它。
+extend-exclude = ["traffic-replay"]
+force-exclude = true
+
 line-length = 120
 target-version = "py310"
 

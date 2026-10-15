@@ -47,6 +47,9 @@ data/         数据层       —— 配置档案（config.yaml / config.staging
                             config.prod.yaml）、users.json 测试数据、schemas.py 契约
 common/       工具层       —— YAML 读取、统一断言封装、环境分层加载（config.py）
 scripts/      工程化脚本   —— 提交信息规范校验（check_commit_msg.py）
+qaplat/       平台层       —— 契约驱动的测试平台自身（门禁分层 / 度量库 / 覆盖矩阵 / 报表）
+mes_web/      本地 Demo Web —— UI 混合链路用的被测站点（故意简单，不依赖公网）
+traffic-replay/ 流量回放（批次 2）—— 独立子项目，自带 pytest.ini 与 conftest.py
 conftest.py   全局 fixture —— 配置、接口对象、报告钩子
 ```
 
@@ -117,9 +120,13 @@ pytest -m login             # 只跑登录契约用例（本地服务，1.3 秒�
 pytest -m smoke             # 只跑冒烟
 pytest -m flaky             # 允许重跑吸收抖动的用例（当前 = testcases/api 打公网的 33 条）
 pytest -m quarantine        # 隔离区：明知红/不稳定但暂不删除的用例（当前 0 条）
+pytest -m platform          # 平台层自测（qaplat 自己：门禁分层/度量库/覆盖矩阵/报表 CLI）
 pytest -n 4 --dist loadfile # 4 进程并行（见下方说明）
 pytest -k "login"           # 按关键字筛选用例
 pytest --lf                 # 只重跑上次失败的用例
+
+# 流量回放（批次 2）是独立子项目：自带 pytest.ini，不在根 marker 体系里，要进它自己的目录跑
+cd traffic-replay; pytest   # 173 条
 
 # 带覆盖率门禁（CI 用的就是这套组合）
 pytest -m api -n 4 --dist loadfile --cov=. --cov-report=term --cov-report= --cov-fail-under=40
@@ -506,15 +513,18 @@ pytest -m mes                             64 passed, 435 deselected in 35.81s
 pytest -m login                           29 passed, 470 deselected in  2.58s
 pytest -m contract                       213 passed, 275 deselected, 11 xfailed in 18.69s
 pytest -m perf                             2 passed, 497 deselected in  4.53s
+pytest -m platform                        99 passed, 400 deselected in  6.5s
 pytest -m ui                             14 passed in 31.11s（合入前；合流后收集 34 条，未重跑）
+
+cd traffic-replay; pytest                173 passed in 15.5s（批次 2，自带 pytest.ini）
 
 pytest -m api -n 4 --dist loadfile       132 passed in 26.28s
 pytest -m mes -n 4 --dist loadfile        64 passed in 18.89s
 CONTRACT_MAX_EXAMPLES=50 pytest -m contract
                                          213 passed, 11 xfailed in 54.42s  # 放大 6.25 倍样例，耗时 ×2.9
 
-pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 5039 560 89%（88.89%）
-pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 4947 1183 76%（76.09%）
+pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 7095 1183 83%
+pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 7003 2689 62%（61.60%）
                                         Required test coverage of 40% reached（退出码 0）
 pytest -m mes --cov=mock_server --cov-report=term          TOTAL 1374 235 83%
 pytest -m login --cov=login_app --cov-report=term          TOTAL   88  13 85%
@@ -525,10 +535,14 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
                                         「代理回退判据」那条缺陷用例仍未补，补上后会先变 22/23（故意红）
 ```
 
-> **合流（qaplat / mes_web）之后的采集口径**：上面这一块里，各行的 `passed` 数与耗时是**合入前**的实测。
+> **合流（qaplat / mes_web）与批次 2 之后的采集口径**：上面这一块里，各行的 `passed` 数与耗时是**合入前**的实测。
 > 合流只新增了打 `platform` 与 `ui` 标记的用例，除 `ui` 之外的各 marker 选取集没有变化，因此那些 `passed` 数仍然成立；
-> 变化的是全量总数（380 → 499）、各行的 `deselected`（`--collect-only` 可复现），以及 `-m ui`（收集数 14 → 34 条）。
-> 覆盖率的四行与并行/放大那两行**未**在合流后重跑，仍是合入前的值。
+> 变化的是全量总数（380 → 499，含平台层 99 条；批次 2 的 173 条自带 `pytest.ini`，不进根收集数）、
+> 各行的 `deselected`（`--collect-only` 可复现），以及 `-m ui`（收集数 14 → 34 条）。
+> **覆盖率那两行已按合流后的代码重跑并改成了上面的新值**：`--cov=.` 的分母里多了 `qaplat/`（9 个模块）
+> 与 `mes_web/`（3 个模块），所以两组都掉了——`not ui` 88.89% → 83%，`api` 76.09% → 61.60%。
+> 批次 2 的 28 个文件**不进**这个分母：它自带 rootdir、`--cov=.` 只覆盖根仓库，
+> 且它的 `analyze/` `recorder/` `replay/` 都没有 `__init__.py`（靠 `conftest.py` 插 `sys.path` 导入）。
 
 > **`-m ui` 的 14 条这次真的在本机跑绿了**（`14 passed in 31.11s`）。
 > 上一版文档在这里写的是 `14 failed`，失败点是 setup 阶段的
@@ -536,17 +550,20 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
 > 换了运行环境后该限制不再生效，**用例与代码一字未改**。
 > 把这一行原样保留成"失败"反而不如实，所以按本次实测改掉了。
 >
-> **覆盖率门禁挂在 `-m api` 上，而它现在有 76.09%，不是"全量"的 88.89%**：
+> **覆盖率门禁挂在 `-m api` 上，而它现在有 61.60%，不是"全量"的 83%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
 > "选取集完全相同"那句当时是对的，现在错了）。
 > 门禁仍定在 40：它要拦的是**退化**，不是卡住当前值。
 >
-> **那 560 不是个稳定值，会在 550~562 之间跳**（同一台机器连跑五次，未覆盖语句数
-> 依次是 560 / 562 / 551 / 558 / 556，对应覆盖率 88.89% / 88.85% / 89.07% / 88.93% / 88.97%
-> —— 真正在动的是这一栏数字，百分比只挪了 0.2pp）。逐文件比对两次运行，差异**全部**来自
-> `mock_server/services.py`（`359/74` ↔ `359/80`）：该服务由 fixture 以常驻子进程拉起、
-> 收尾走 `terminate()`，落盘那一刻的行数取决于被测服务有没有被动到那几行。
-> 所以这一栏请读**百分比**和量级，别把 560 当成固定值。
+> **那未覆盖语句数不是个稳定值**：合流前同一台机器连跑五次是
+> 560 / 562 / 551 / 558 / 556，对应覆盖率 88.89% / 88.85% / 89.07% / 88.93% / 88.97%
+> —— 真正在动的是这一栏数字，百分比只挪了 0.2pp。合流后分母变成 7095，
+> 这一栏在 1177 ~ 1183 之间跳（三次实测 1179 / 1177 / 1183，百分比一直是 83%）。
+> 逐文件比对两次运行，差异**全部**来自
+> `mock_server/services.py`（合流前 `359/74` ↔ `359/80`，合流后 `359/76` ↔ `359/78`）：
+> 该服务由 fixture 以常驻子进程拉起、收尾走 `terminate()`，落盘那一刻的行数
+> 取决于被测服务有没有被动到那几行。
+> 所以这一栏请读**百分比**和量级，别把它当成固定值。
 >
 > **`mock_server/*` 的覆盖率现在是真行为覆盖**（波 2 · P1-3，见 `docs/wave2-coverage-handoff.md`）。
 >
@@ -736,6 +753,30 @@ ADMIN 角色、读写混合（read:write = 8:1）、`wait_time = 0`（用户数�
 完整论证（含每个结论的原始 `Aggregated` 行、失败明细、未验证项）在
 [`docs/wave3-load-handoff.md`](docs/wave3-load-handoff.md)。
 
+## 流量回放（批次 2，独立子项目）
+
+`traffic-replay/` 是一条**独立交付物**，不是根仓库的一层：它有自己的 `pytest.ini`
+（`testpaths = tests`、marker 是 `recorder` / `replay` / `analyze`，与根仓库那 12 个
+**零重叠**）和自己的 `conftest.py`（只把本目录插进 `sys.path`）。因此：
+
+- **根 `pytest` 收集不到它**（根 `pytest.ini` 是 `testpaths = testcases`），要单独进目录跑：
+
+  ```powershell
+  cd traffic-replay; pytest        # 173 passed
+  ```
+
+- **它不受根 `ruff.toml` 管辖**：`replay/model.py` 用了 `type JsonValue = ...`
+  这个 py312 才有的类型别名语句，而根配置声明 `target-version = "py310"`。
+  根 `ruff.toml` 用 `extend-exclude`（不是 `exclude`——后者是**替换**默认排除表，
+  会把 `.tox` / `node_modules` 一起顶掉）把它排除掉，`force-exclude = true`
+  让 pre-commit 那种"显式传文件名"的调用形式也一并跳过。
+- **它不进覆盖率分母**：`--cov=.` 只统计根仓库（且它的 `analyze/` `recorder/` `replay/`
+  都没有 `__init__.py`，靠 `conftest.py` 插 `sys.path` 导入）。
+- CI 上有独立一步 `working-directory: traffic-replay`，**不设 `continue-on-error`**。
+
+设计文档在 `traffic-replay/docs/recorder-design.md` 与 `replay-design.md`，
+共享数据模型被冻结在 `traffic-replay/FROZEN_INTERFACES.md`。
+
 ## 持续集成
 
 推送到 `main`、开 PR、手动点按钮，以及**每周一凌晨的定时回归**都会触发。共 **7 个 job**：
@@ -749,7 +790,7 @@ ADMIN 角色、读写混合（read:write = 8:1）、`wait_time = 0`（用户数�
 |---|---|---|
 | `lint` | `ruff check .` + `ruff format --check .`（规则全部来自仓库根的 `ruff.toml`） | ✅ 拦 |
 | `typecheck` | `python -m mypy`（配置来自 `pyproject.toml`） | ✅ 拦 |
-| `test` | 先做契约漂移门禁 → 契约属性测试 → 再跑四组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约）→ 汇总 flaky 治理账本 + 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
+| `test` | 先做契约漂移门禁 → 契约属性测试 → 再跑六组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约 → 平台层自测 → 流量回放子项目）→ 汇总 flaky 治理账本 + 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
 | `security` | `pip-audit --requirement requirements.lock --strict` | ❌ 不拦（见下） |
 | `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂；再跑 `scripts/check_gate_policy.py` 校验门禁策略没腐烂 | ✅ 拦 |
 | `commit-convention` | 拿最近 30 条真实提交跑 `scripts/check_commit_msg.py` | ✅ 拦（逐条警告，不聚合） |

@@ -329,6 +329,16 @@ jobs:
       - name: 运行登录契约自动化（本地被测服务）
         run: pytest -m login --alluredir=allure-results
 
+      # 流量回放（批次 2）：它落在 traffic-replay/ 子目录里，**自成一个子项目**——
+      # 自带 pytest.ini（testpaths = tests、addopts = -v -ra --strict-markers，marker 是
+      # recorder / replay / analyze，与根 12 个 marker 零重叠）与自己的 conftest.py。
+      # 根 pytest.ini 的 testpaths = testcases 收不到它，所以必须由这一步单独跑；实测 173 条。
+      # 用 working-directory 而不是 cd：失败时 GitHub 会把出错行定位到这条 run 上，更好读。
+      # 不设 continue-on-error：它是独立交付物，红了就是它自己坏了，必须拦住流水线。
+      - name: 运行流量回放子项目自测（自带 pytest.ini，独立于根 marker 体系，失败即阻塞）
+        working-directory: traffic-replay
+        run: python -m pytest -q
+
       # qaplat 平台层自测：被测对象是**平台自己**——registry 的用例/operation 归属、
       # metrics_store 的落盘格式、gate_layers 的门禁分层、drift_report_cli 的命令行契约，
       # 实测 99 条（testcases/platform/ 下 4 个文件）。
@@ -452,6 +462,7 @@ jobs:
             echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端，刻意串行） |"
             echo "| 登录契约 | \`pytest -m login\`（本地被测服务，钉住当前行为含 6 个已知缺陷） |"
             echo "| qaplat 平台层 | \`pytest -m platform\`（平台自身：registry 覆盖矩阵、metrics_store、gate_layers、报表 CLI） |"
+            echo "| 流量回放 | \`traffic-replay\` 子项目（自带 pytest.ini，173 条，独立于根 marker 体系） |"
             echo "| 数据隔离 | \`data_isolation_check\`：会话结束时各表行数与库存合计必须回到基线 |"
             echo "| flaky 治理 | 只有显式标了 \`flaky\` 的 33 条会在指纹匹配时重跑 1 次（裸 \`@pytest.mark.flaky\` 全仓 0 处，无全局 \`--reruns\`；账本见 \`flaky-governance\` artifact） |"
             echo "| 报告 | 见下方 Artifacts 里的 \`allure-report\` |"
