@@ -4,10 +4,12 @@
 `docs/质量门禁策略.md`，并新增 `scripts/check_gate_policy.py` 让文档与 workflow / `pytest.ini`
 **可机器校验地对齐**——两边一分叉，CI 立刻红。
 
-范围：**9 个中文 conventional commit**（`7b6a044` → `cc10cba`），**没有任何现有 job 从阻塞被改成非阻塞**。
-前 6 条是本任务原始交付（`7b6a044` → `d024a42`，7 文件 +707/-4，基线 `0e61618`）；
-后 3 条是**整合阶段**的修复与订正（`099341d`、`32dba09`、`e875e06`、`c87efe2`、`cc10cba`、`f99fe2c`），
-起因见 §八之二：`perf` job 并入后，脚本对 **job 级** `continue-on-error` 完全失明。
+范围：**15 个中文 conventional commit**，**没有任何现有 job 从阻塞被改成非阻塞**：
+
+- **前 6 条＝本任务原始交付**（`7b6a044` → `d024a42`，7 文件 +707/-4，基线 `0e61618`）；
+- **后 9 条＝整合阶段的修复与订正**（`099341d` → `7eaa6a3`，接在整合分支 `4c4f3de` 之后）：
+  `perf` job 并入后，脚本对 **job 级** `continue-on-error` 完全失明（既能假绿、也能误红），
+  起因与逐条改动见 §八之二。
 
 > **本 handoff 的两次快照口径**：§一、§二前 6 条写的是**原始交付时**的事实（9 marker / 6 job / 两处豁免）；
 > §三之后凡标「整合」的段落按**整合后**的事实写（10 marker / 7 job / 三处豁免）。
@@ -298,7 +300,7 @@ job 级豁免比 step 级更强（整条 job 的红都不算数），所以脚�
 `git diff 0e61618..d024a42 -- .github/workflows/test.yml` 的全部内容是 8 行新增（一段注释 + 一个新 step），
 `continue-on-error` 出现次数改动前后都是 2（`test.yml:299`、`546`），**没有任何一处的值被改过**。
 
-### 八之二：整合阶段的修复（6 条，接在 `4c4f3de` 之后）
+### 八之二：整合阶段的修复（9 条，接在 `4c4f3de` 之后）
 
 **触发条件**：波 3 其它支线把 `perf` job（`test.yml:668-672`）并入整合分支后，
 **该 job 带一处 job 级 `continue-on-error: true`**（缩进 4）。脚本原先只匹配 8 空格缩进
@@ -315,18 +317,23 @@ job 级豁免比 step 级更强（整条 job 的红都不算数），所以脚�
 | 10 | `f99fe2c` `docs(ci): 订正流水线摘要里的 flaky 文案，别再暗示有一个 -m flaky 的 step` | `.github/workflows/test.yml` | 摘要表那一行原写 `pytest -m flaky 只对…重跑`，改为说明重跑经 `NETWORK_FLAKY` 挂在 `-m api` 那一步（**纯文案订正，不改任何门禁语义**） |
 | 11 | `c87efe2` `fix(scripts): 门禁校验脚本不再把 false 当作豁免` | `scripts/check_gate_policy.py` | 新增 `is_enabled`（`doc:79-86`）：只有字面 `true` 才算放行，`continue-on-error: false` 与 `${{ … }}` 表达式都不算——false 语义上就是阻断，算成豁免同样是假绿 |
 | 12 | `cc10cba` `docs: 订正策略文档的标签计数与表述` | `docs/质量门禁策略.md` | 「不单独开 step」段落标题补齐 `perf`；条数按重跑校准 |
+| 13 | `80ce12e` `docs: 策略文档的预算时长表补上 perf 行` | `docs/质量门禁策略.md` | 第七节预算表原先只有 6 行、与第二节 7 个 job 对不齐，补 `perf | 20 分钟` |
+| 14 | `d8c124f` `docs: 交接说明同步整合阶段的两处事实` | `docs/wave3-gate-policy-handoff.md` | 本文档：§四 marker/job 表按整合后 10 marker / 7 job 重写、§八拆成原始交付与整合修复两节、§九改为 int3 实测、新增 §九之三 七项反向验证、§十补三条未验证项 |
+| 15 | `7eaa6a3` `docs: 交接说明的隔离区证据改为 int3 内实测` | `docs/wave3-gate-policy-handoff.md` | 原先抄的是 w3-gate 副本的输出（账本路径与工作目录都不是整合副本），换成 int3 内实跑输出 |
 
 > 上表 #10 是**唯一**一条触碰 `.github/workflows/test.yml` 的整合改动，内容是摘要表里的**文案**
-> （`continue-on-error` 的出现次数与取值均未变）。其余 5 条只动 `docs/质量门禁策略.md` 与
-> `scripts/check_gate_policy.py`——边界要求「不许动 test.yml / pytest.ini 的豁免语义」被遵守。
+> （`continue-on-error` 的出现次数与取值均未变）。#7/#9/#11 只动 `scripts/check_gate_policy.py`，
+> #8/#12/#13 只动 `docs/质量门禁策略.md`，#14/#15 只动本 handoff——边界要求
+> 「不许动 test.yml / pytest.ini 的豁免语义」被遵守。
 
-**整合阶段总规模**（`git diff --stat 4c4f3de..cc10cba`）：
+**整合阶段总规模**（`git diff --stat 4c4f3de..HEAD`）：
 
 ```
- .github/workflows/test.yml                          |   2 +-
- "docs/质量门禁策略.md"                               |  46 +++++---
- scripts/check_gate_policy.py                        | 120 +++++++++++++++----
- 3 files changed, 135 insertions(+), 33 deletions(-)
+ .github/workflows/test.yml                         |   2 +-
+ docs/wave3-gate-policy-handoff.md                  | 242 ++++++++++++++++-----
+ "docs/质量门禁策略.md"                              |  47 ++--
+ scripts/check_gate_policy.py                       | 120 ++++++++--
+ 4 files changed, 318 insertions(+), 93 deletions(-)
 ```
 
 ---
