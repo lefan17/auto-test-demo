@@ -659,3 +659,61 @@ jobs:
           done < <(git log -n 30 --pretty=%H)
           echo "合规 $ok 条 / 不合规 $bad 条" >> "$GITHUB_STEP_SUMMARY"
           echo "合规 $ok 条 / 不合规 $bad 条"
+
+  # 容量压测（波 3）。为什么它必须是非阻塞、且 push/PR 不触发：
+  # 一批 4 梯度 × 2 次 × 20s 要 ~200 秒，而且数字天然带 10% 量级的批次间噪声
+  # （见 docs/wave3-load-handoff.md 的重复性一节）——拿它当 PR 门禁，等于给每个
+  # PR 加一个"随机红灯"，最后一定被人加 continue-on-error 或者直接删掉。
+  # 结论要人看：所以只在手动点按钮和周一夜间跑，结果传 artifact，红了自己判断。
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # locust 故意不在 requirements.txt 里：它是压测工具而不是测试依赖，
+      # 会拖进 gevent 并 monkey-patch 标准库（理由见 requirements-perf.txt 文件头）。
+      - name: 安装依赖
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-perf.txt
+
+      - name: 容量压测（4 梯度 × 2 次 × 20s）
+        run: python perf/run_load.py --users "5,10,20,50" --run-time 20s --repeat 2 --label ci
+
+      # 压测的产出是给人读的容量结论，不是通过/失败信号。
+      # 报告里最该看的两处：Aggregated 行与 knee 判定（summary.json）。
+      - name: 上传压测结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          path: reports/perf/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 容量结论摘要
+        if: always()
+        run: |
+          set -uo pipefail
+          latest=$(ls -1d reports/perf/*/ 2>/dev/null | tail -n 1 || true)
+          if [ -z "$latest" ]; then
+            echo "没有产出结果目录" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "### 容量压测 $latest"
+            echo '```json'
+            python -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding='utf-8'))['knee'], ensure_ascii=False, indent=2))" "${latest}summary.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
