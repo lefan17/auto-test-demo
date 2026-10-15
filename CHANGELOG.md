@@ -12,153 +12,6 @@
 
 ## [未发布]
 
-### 新增 —— 性能基线回归（波 3 · P2-2）
-
-病灶：`testcases/api/test_response_time.py` 只有 2 条、且**没有基线**，唯一的时间断言是
-「**单次**请求 `elapsed_ms < MAX_RESPONSE_MS`」，打的是公网 `jsonplaceholder`。
-一次请求的耗时是纯噪声，公网链路又不可控 —— 这个门禁既没有分辨力，也没有可比性。
-
-- **`testcases/api/perf_baseline.json`（新增）**：把 P95 落成入仓基线。6 个只读端点
-  （`/healthz`、`/materials`、`/materials/{code}`、`/inventory/stock`、`/work-orders`、
-  `/inventory/ledger`）各采 **100 次**、丢弃前 **10 次**预热，记录
-  P50/P95/P99/max/mean/samples 与采集环境指纹（平台/CPU/Python/分位方法/阈值公式）。
-  **文件里没有一个手编数字**，全部来自一次真实采集。
-- **`testcases/api/perf_baseline.py`（新增，331 行）**：纯逻辑层——nearest-rank 分位、
-  基线读写、阈值判定、diff 渲染。不 import pytest、不起服务，所以门禁用例与重采入口用的是
-  **同一份**判定实现（两份实现迟早飘掉，而门禁飘掉是不报错的）。
-  用 nearest-rank 而非线性插值：N=100 时插值会给出一个**从未真实发生过**的延迟值
-  （例如第 94.5 个样本），排查回归时「这条 P95 对应哪次请求」必须能当场指出来。
-- **阈值 = `基线 P95 × 3.0 + 10ms`**：倍数吸收跨机器的系统性差异，绝对下限吸收
-  「基线只有几毫秒时倍数放大不出分辨率」。定位说清楚——它拦的是**量级劣化**
-  （漏索引、N+1 查询、同步阻塞变大），不是几毫秒的漂移。要更严调
-  `PERF_P95_FACTOR` / `PERF_P95_FLOOR_MS`，不必改代码。
-- **`testcases/api/test_perf_baseline.py`（新增，2 条）**：基线文件可用性 + P95 预算判定。
-  基线缺端点/缺字段/分位次序颠倒/样本数不足都单独判红 —— 「门禁没了基线」和
-  「门禁发现回归」处置完全不同，必须能分辨。同时打 `api` 与 `perf` 两个标记：
-  前者让它被 `-m api` 这个总门禁自动包含，后者让它能单独跑（并行批次的调度抖动会污染采样）。
-- **`testcases/api/conftest.py`（新增）**：session 级起本地 `mock_server`，**复用**
-  `testcases/mes/mock_server_ctl.MockServer`（含「子进程连的库是否与期望一致」的健康校验，
-  正好挡住「服务没起起来、请求打到别的端口」）。基线**必须**打在本地：同一份代码、同一份
-  种子数据、同一个 SQLite，只有这样「P95 变差了」才指向被测代码。该目录原先没有 conftest.py，
-  且 fixture 无 autouse，对既有 api 用例零影响。
-- **抖动类用例明确切割**：`test_response_time.py` **一字未改**保留（它还能发现代理/证书/DNS
-  这类问题），但新文件 docstring 里写清「它测的是链路、属抖动类、**与基线无关**」。
-  新用例**既不**打 `NETWORK_FLAKY`，失败文案也**刻意避开**「接口响应过慢」——
-  那句话是 `flaky_policy.py` 的重跑指纹，撞上就等于把真回归吸收一次、门禁被悄悄放宽。
-- **显式重采入口**：`UPDATE_PERF_BASELINE=1 python -m pytest -m perf -s`。两条硬约束：
-  只能由一次真实采集写文件；必须打印 `旧值 → 新值`（否则「重新采集」与「悄悄放宽门禁」
-  的输出无法区分）。
-- **`pytest.ini`**：markers 段**追加** `perf` 一条（`--strict-markers` 下不登记会在收集期报错），
-  既有 9 条 marker 一字未动。
-- **验收实测**（都带原始命令与关键输出行，见 `docs/wave3-perf-baseline-handoff.md`）：
-  `pytest -m api` 由改动前 `130 passed` → **`132 passed, 239 deselected`**；
-  **反向验证**把绝对上限设成 1ms → **6 条端点全红**（`Failed: 性能基线回归：...`），
-  撤掉后回到 `2 passed`，证明门禁真的在判；
-  **稳定性**同一梯度重复三次，单端点 P95 轮间波动最大 **1.25x**（把任务期间八次同口径采集一并计入 1.96x），
-  阈值倍数 3.0 对实测最慢 P95 仍留 4 倍以上余量 ⇒ **容差无需调整、门禁不会随机红**；
-  另外补验了两条阈值臂（`PERF_P95_FACTOR` / `PERF_P95_FLOOR_MS`）与「显著变快」提示分支，
-  并在 CI 同款命令 `pytest -m api -n 4 --dist loadfile` 下实测 **132 passed**；
-  `ruff check .` → `All checks passed!`、`ruff format --check .` → `97 files already formatted`、
-  `python -m mypy` → `Success: no issues found in 77 source files`。
-- **零新增依赖**：只用 `requests` + stdlib，`requirements.txt` / `requirements.lock` **未改**。
-  `testcases/mes/`、`testcases/login/`、`testcases/contract/`、`testcases/ui/`、`apis/`、
-  `mock_server/`、`common/`、根 `conftest.py`、`login_app/`、CI workflow **全部未动**。
-- ⚠️ **未验证**：**没有在 Linux runner 上实测**（基线里的环境指纹是 Windows 本机，
-  且 CI 的 `pytest -m api -n 4 --dist loadfile` 会在 4 核 runner 上与其它 worker 抢 CPU，
-  采样被压慢的倍率无从得知）。详见
-  `docs/wave3-perf-baseline-handoff.md` 的「未验证项清单」。
-### 新增 —— 分层门禁策略显式化（波 3）
-
-这一批改动的主题是：**把「哪个测试层阻塞、哪一步放行」从 workflow 里的 `continue-on-error` 行搬进文档，并让它可机器校验。**
-
-- **`docs/质量门禁策略.md`（新增）**：逐条写明全部 9 个 marker 与 6 个 job 的
-  **触发时机 → 是否阻塞 → 失败找谁 → 预算时长 → 依据**，并承接波 2 的 `flaky` / `quarantine` 处置策略。
-  文档里额外说清了两件只靠读 workflow 看不出来的事：
-  ①`smoke` / `regression` / `flaky` 是**横切标签而不是测试层**，它们标中的 36 / 64 / 33 条用例
-  全部落在 `api` / `mes` / `ui` 三个宿主层内（子集探测 outside = 0），所以 CI 里**没有** `-m smoke` 之类的 step；
-  ②`contract` 的 224 条**完全在宿主层之外**，因此必须有独立的 step。
-- **UI 不阻塞的理由、风险与退出条件写足了（`docs/质量门禁策略.md` 第六节）**：
-  现状只有一句"外部因素多"。展开为三条归因理由（失败归因不可靠 / 无可复现环境 / 耗时与不稳定互相放大）、
-  三类风险（静默腐烂、覆盖停止生长、报告靠自觉），以及**三条可判定的退出条件**——
-  A 改为本地站点即立即改；B 近 20 次 CI 的 UI step 非代码原因失败 ≤ 1 次；
-  C 站点改版表现为确定的契约失败。并列出改阻塞时要同步改的四处。
-- **`scripts/check_gate_policy.py`（新增）**：读 `pytest.ini` 的 markers、`.github/workflows/test.yml` 的
-  job / `timeout-minutes` / `continue-on-error`、以及策略文档三段 `<!-- gate-policy:... -->` 表格，
-  做四项双向校验：job 集合、阻塞性与超时、放行步骤清单、marker 归属，任一条对不上退出 1。
-  **纯标准库**（不 import PyYAML）：这份 workflow 只有 job/step 两层结构，而 YAML 1.1 会把顶格的
-  `on:` 解析成布尔 `True`、还得为此写补偿代码；缩进扫描更直白，也让脚本零依赖。
-  实测两种解析方式对 6 个 job 的 timeout 与豁免点判定**完全一致**。
-- **反向验证有红证**：实验 A 只把 `security` 改名成 `security-scan` 而不动文档 → 脚本报 4 项不一致、
-  exit=1；实验 B 只删掉 UI 那步的 `continue-on-error: true` 而不动文档 → 脚本报 2 项不一致、exit=1。
-  两次实验后 `git checkout` 还原，正常态复跑 exit=0。
-- **`pre-commit` job 里接上了这一步（只加严）**：工作流只新增一步 `python scripts/check_gate_policy.py`，
-  没有任何现有 job 从阻塞被改成非阻塞。
-- **`pytest.ini` 只补注释**（marker 名单与 `addopts` 语义逐字节不变）：指明各 marker 的归属文档、
-  以及「新增/改名 marker 必须同时改策略文档，否则 CI 红」。
-- **`README.md` / `CONTRIBUTING.md` 收敛到单一真值**：README 的 job 表与 flaky 段改为指向策略文档；
-  `CONTRIBUTING.md` 原文把 job 名与 marker 名混用（"`mes` / `login` 是阻塞的"其实是 job 名与 marker 名各说一半）、
-  且漏掉 `pre-commit` / `commit-convention`，现已改为以策略文档为准并给出准确的 6 job 速览。
-### 新增 —— 容量压测与拐点判定（波 3）
-
-这一批解决的是：仓库里只有**竞态判定**，没有任何东西能回答"能扛多少并发"。
-`testcases/mes/concurrency.py` 用 `threading.Barrier` 对齐启动、用 `spans` 时间线是否交叠
-判"会不会超卖"，2 个并发就能红；它不产出容量数字，也产不出——测的不是同一件事。
-
-新增 `perf/`，用 locust 施加**按用户数分梯度的持续负载**：
-
-- **`perf/locustfile.py`（新增）**：两个 User 类。`MesApiUser` 是读写混合（read : write = 8 : 1），
-  `LoginOnlyUser` 只打 `/auth/login`（量 PBKDF2 120_000 rounds 的 CPU 天花板）。
-  `wait_time = constant(0)`：用户数≈在途请求数，量的是**服务端吞吐上限**。
-  两个类由 runner **按类名指定**跑哪一个——让 locust 自动按权重分派的话，"50 用户"里会有
-  一半在打登录，两个场景的数字互相污染；用 `--tags` 过滤也不行，被过滤空的类照样占名额。
-- **`perf/run_load.py`（新增）**：起服务 → 多梯度发压 → 解析 locust CSV → 拐点判定 →
-  落 `summary.json` / `samples.jsonl` → 回收服务并留下回收证据。**`--concurrency-window-ms 0`**
-  起服务：`mock_server/services.py:101` 那个 120ms 人工窗口是给竞态用例用的教学 sleep，
-  压测不关掉的话 P95 里量的全是它（没有改被测代码，只是关掉一个环境开关）。
-- **`perf/run_load.ps1`（新增）**：一键入口，顺带把两处 Windows 地雷处理掉——
-  `PYTHONUTF8=1`（否则 locust 用 GBK 读 `pyproject.toml` 直接 exit=2）与
-  `PYTHONPATH` 三项（`pip --target` 装的 pywin32 不生效 `.pth`，少了 `win32\lib` 就
-  `ModuleNotFoundError: No module named 'pywintypes'`）。
-- **`requirements-perf.txt`（新增）**：只有 `locust==2.46.7`，**故意不并入 `requirements.txt`**。
-  后者是每个 CI job 都装的**门禁依赖集**，而 locust 会拖进 gevent 并 monkey-patch 标准库——
-  让单元测试与 UI 测试跑在被 patch 的运行时上，风险远大于收益。
-
-**实测容量结论（本机 i5-1240P，16 逻辑核，压测机与被测服务同机，4 梯度 × 2 次 × 20s）**：
-
-| 并发 | RPS | P50 | P95 | P99 | 错误率 | 服务端 5xx |
-|---|---|---|---|---|---|---|
-| 5 | 340.6 ~ 419.1 | 11~14ms | 22~24ms | 30~31ms | 0.00% | 0 |
-| 10 | 298.6 ~ 377.4 | 23~29ms | 54~65ms | 67~79ms | 0.00% | 0 |
-| 20 | 335.4 ~ 371.4 | 45~51ms | 104~115ms | 125~145ms | 0.00% | 0 |
-| 50 | 338.9 ~ 357.9 | 104~105ms | 205~230ms | 695~970ms | 0.02~0.06% | 2~6 |
-
-三个拐点**不在同一档**，所以分三行报，不合成一个"最大并发"（判据与数字一起写进
-`summary.json` 的 `knee` 字段，可复核）：
-
-- **吞吐 10 并发饱和**：5u→10u 的 RPS 不是变平而是**掉**了 10%~12%，之后 20u/50u 也再没超过 5u。
-- **延迟 10 并发恶化**：P95 从 22~24ms 跳到 54~65ms，越过"最低档 × 2"的判据线；
-  50u 时 P99 到 695~970ms。
-- **稳定性 50 并发出错**：50 档首次出现 2~6 次 500 / 连接重置，服务日志对应
-  `sqlite3.OperationalError: database is locked`（栈顶 `mock_server/db.py:296` 的 `BEGIN IMMEDIATE`）。
-  总错误率只有 0.02%~0.06%——**只看错误率会把这一档误判成健康**，所以 5xx 是单独数的、阈值取 0。
-
-**三条如实登记**：
-
-1. **压测机与被测服务同机**，所以绝对 RPS 与拐点档位都是**乐观上界**，真实跨网只会更差；
-   要拿生产规划的容量数得换独立压测机。
-2. **三个拐点里"SQLite 写锁"这一条是推断**：有 `database is locked` 的栈证据，但没做
-   "只跑读负载"的对照批次来隔离。
-3. **退料接口默认关闭**（`LOAD_INCLUDE_REVERSE=0`）：它在 10 并发下稳定 400，根因是
-   `mock_server/services.py:636` 的 check-then-act 竞态（`reverse_material` 没有并发窗口保护），
-   留在混合场景里会让"错误率"变成"容量不足 + 脚本踩中竞态"的混合物。要它的延迟数字
-   就单独跑，那一批的错误率含竞态，得在报告里说明。
-
-**不进 CI 阻塞门禁**：一批 ~200 秒且数字带 10% 量级的批次间噪声，拿它当 PR 门禁等于给每个 PR
-加一个随机红灯。新增 job `perf`（`.github/workflows/test.yml`）只在 `workflow_dispatch` 与
-`schedule` 触发，`continue-on-error: true`，把 `reports/perf/` 传 artifact 并把拐点 JSON
-贴进 Step Summary——产出是**给人读的容量结论**，不是通过/失败信号。
-手动命令：`pwsh -File perf/run_load.ps1`。
-
 ### 新增 —— 认证层与契约驱动（波 1）
 
 这一批改动的主题是：**把「口令写死在代码里」和「接口契约靠人手抄」这两件企业里最先出事的事处理掉**。
@@ -287,43 +140,6 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
   「标了 flaky 的用例首跑失败会被重跑」「真回归不被重跑吞掉」「隔离区用例退出主门禁且清单被打印」
   「隔离区能单独跑」。三条机制各配一次反向对照（改坏 → 红 → 还原 → 哈希一致）。
 
-### 新增 —— 数据生命周期：失败兜底、TTL 清理、清理幂等（波 3）
-
-这一批处理的是**「测试数据收不回来」**：`data_factory` + `data_isolation` 的登记式回收
-和 8 张表快照校验都已经到位，缺的是**失败那一路**和**跨会话残留**。
-
-- **`testcases/mes/conftest.py`（修复，`7f74b6f`）**：`factory` 的 teardown 原本是直线代码
-  —— `chain_errors = ledger_balance_chain_errors(...)` → `assert not chain_errors` →
-  `actions = f.cleanup()`。**流水链一红，`cleanup()` 那行就永远走不到**，用例造的数据
-  全留在库里，会话收尾再报一次基线漂移，真正的原因被第二层红盖住。
-  改成两件事互不阻断：回收一定执行（`except BaseException`，覆盖 Ctrl-C），
-  失败**先打印再原样抛回**（不吞掉 —— 吞掉就等于让"没删干净"永远不可见）。
-  **承重性有红证**：把探针跑在修复前的 conftest 上，输出里**没有** `[数据回收]`，
-  并出现 `表 work_orders: 基线 0 行 -> 现在 1 行（差 +1）`、`表 stock_ledger: ... 差 +2`；
-  修复后只剩流水链那一条红。
-- **`testcases/mes/data_factory.py`（新增 `verify_clean()`）**：清理后再按登记过的
-  单号/编码逐条回查，返回**没被删掉的残留**供 teardown 断言。少了这一步，
-  一次没生效的 DELETE 会表现为"用例全绿、下一轮基线漂移"，报错指向下一轮。
-- **`testcases/mes/data_ttl.py`（新增）+ `scripts/mes_data_ttl.py`（新增）**：
-  按 TTL 清理跨会话残留。判据两级，**基线白名单是硬否决**：种子用户/物料/
-  `(物料, 仓库)` 键命中即永不删除，**哪怕它已经"过期"** —— 种子行的 `created_at`
-  就是建库那一刻，本来就老于任何 TTL，**只看时间判定，第一次跑就会把种子数据全删掉**。
-  另一级是「认得出是测试数据」：工厂标记正则 + 手写字面量清单
-  （仓库里有一批用例手写编码如 `FG-TEST-01`/`FG-X`/`MAT-ACL`/`WO-IDEM-*`，不含随机标记）。
-  认不出来的过期行**不删只报告**。默认 dry-run，`--ttl-hours` 可配，
-  `--fail-on-lingering` 可接 CI。
-- **`testcases/mes/test_data_lifecycle.py`（新增，9 条）**：用**真 pytest 子进程**跑两条
-  故意失败的探针（放在不匹配 `python_files = test_*.py` 的 `_fault_probe.py` /
-  `_leak_probe.py` 里，默认收集不到），把「兜底真的存在」「清理不彻底会被会话级断言抓到」
-  变成可执行证据；另有 TTL 清理前后 `row_counts` 对照、连跑两次的幂等、白名单保护、
-  时间戳两种真实形状的解析容错。
-- 回归数：`pytest -m mes` **55 → 64 passed**；`ruff check` / `ruff format --check` /
-  `mypy`（74 → 79 files）全过。
-
-> **踩过的坑，留在探针注释里**：故障探针**第一版**用"正文随便抛个异常"，
-> 它对着**修复前**的代码也是绿的 —— 正文异常根本不阻止 teardown 继续跑，
-> `cleanup()` 照样执行，**等于什么都没证明**。真正会挡住 `cleanup()` 的只有
-> "先断言、后回收"那个顺序，探针必须精确命中流水链断言。
 ### 新增 —— 用例编号到禅道用例 ID 的上报链路（波 3 · P2-1）
 
 **病灶**：`testcases/login/test_login_contract.py` 里的 `LC-01`~`LC-30` 是**只写给人看的**——
@@ -361,6 +177,193 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
 ① `POST /testcases/{id}/results` 在**开源版**上是否真能落库（论坛有归档帖报过"不起作用"）；
 ② `testtask` 是否必须非 0 才更新测试单结果（脚本默认发 0）；③ 成功响应里的 `id`
 究竟是用例 ID 还是用例-测试单关联 ID。**在这些核实之前，`--send` 只能当"对着测试实例试"用。**
+
+### 新增 —— 性能基线回归（波 3 · P2-2）
+
+病灶：`testcases/api/test_response_time.py` 只有 2 条、且**没有基线**，唯一的时间断言是
+「**单次**请求 `elapsed_ms < MAX_RESPONSE_MS`」，打的是公网 `jsonplaceholder`。
+一次请求的耗时是纯噪声，公网链路又不可控 —— 这个门禁既没有分辨力，也没有可比性。
+
+- **`testcases/api/perf_baseline.json`（新增）**：把 P95 落成入仓基线。6 个只读端点
+  （`/healthz`、`/materials`、`/materials/{code}`、`/inventory/stock`、`/work-orders`、
+  `/inventory/ledger`）各采 **100 次**、丢弃前 **10 次**预热，记录
+  P50/P95/P99/max/mean/samples 与采集环境指纹（平台/CPU/Python/分位方法/阈值公式）。
+  **文件里没有一个手编数字**，全部来自一次真实采集。
+- **`testcases/api/perf_baseline.py`（新增，331 行）**：纯逻辑层——nearest-rank 分位、
+  基线读写、阈值判定、diff 渲染。不 import pytest、不起服务，所以门禁用例与重采入口用的是
+  **同一份**判定实现（两份实现迟早飘掉，而门禁飘掉是不报错的）。
+  用 nearest-rank 而非线性插值：N=100 时插值会给出一个**从未真实发生过**的延迟值
+  （例如第 94.5 个样本），排查回归时「这条 P95 对应哪次请求」必须能当场指出来。
+- **阈值 = `基线 P95 × 3.0 + 10ms`**：倍数吸收跨机器的系统性差异，绝对下限吸收
+  「基线只有几毫秒时倍数放大不出分辨率」。定位说清楚——它拦的是**量级劣化**
+  （漏索引、N+1 查询、同步阻塞变大），不是几毫秒的漂移。要更严调
+  `PERF_P95_FACTOR` / `PERF_P95_FLOOR_MS`，不必改代码。
+- **`testcases/api/test_perf_baseline.py`（新增，2 条）**：基线文件可用性 + P95 预算判定。
+  基线缺端点/缺字段/分位次序颠倒/样本数不足都单独判红 —— 「门禁没了基线」和
+  「门禁发现回归」处置完全不同，必须能分辨。同时打 `api` 与 `perf` 两个标记：
+  前者让它被 `-m api` 这个总门禁自动包含，后者让它能单独跑（并行批次的调度抖动会污染采样）。
+- **`testcases/api/conftest.py`（新增）**：session 级起本地 `mock_server`，**复用**
+  `testcases/mes/mock_server_ctl.MockServer`（含「子进程连的库是否与期望一致」的健康校验，
+  正好挡住「服务没起起来、请求打到别的端口」）。基线**必须**打在本地：同一份代码、同一份
+  种子数据、同一个 SQLite，只有这样「P95 变差了」才指向被测代码。该目录原先没有 conftest.py，
+  且 fixture 无 autouse，对既有 api 用例零影响。
+- **抖动类用例明确切割**：`test_response_time.py` **一字未改**保留（它还能发现代理/证书/DNS
+  这类问题），但新文件 docstring 里写清「它测的是链路、属抖动类、**与基线无关**」。
+  新用例**既不**打 `NETWORK_FLAKY`，失败文案也**刻意避开**「接口响应过慢」——
+  那句话是 `flaky_policy.py` 的重跑指纹，撞上就等于把真回归吸收一次、门禁被悄悄放宽。
+- **显式重采入口**：`UPDATE_PERF_BASELINE=1 python -m pytest -m perf -s`。两条硬约束：
+  只能由一次真实采集写文件；必须打印 `旧值 → 新值`（否则「重新采集」与「悄悄放宽门禁」
+  的输出无法区分）。
+- **`pytest.ini`**：markers 段**追加** `perf` 一条（`--strict-markers` 下不登记会在收集期报错），
+  既有 9 条 marker 一字未动。
+- **验收实测**（都带原始命令与关键输出行，见 `docs/wave3-perf-baseline-handoff.md`）：
+  `pytest -m api` 由改动前 `130 passed` → **`132 passed, 239 deselected`**；
+  **反向验证**把绝对上限设成 1ms → **6 条端点全红**（`Failed: 性能基线回归：...`），
+  撤掉后回到 `2 passed`，证明门禁真的在判；
+  **稳定性**同一梯度重复三次，单端点 P95 轮间波动最大 **1.25x**（把任务期间八次同口径采集一并计入 1.96x），
+  阈值倍数 3.0 对实测最慢 P95 仍留 4 倍以上余量 ⇒ **容差无需调整、门禁不会随机红**；
+  另外补验了两条阈值臂（`PERF_P95_FACTOR` / `PERF_P95_FLOOR_MS`）与「显著变快」提示分支，
+  并在 CI 同款命令 `pytest -m api -n 4 --dist loadfile` 下实测 **132 passed**；
+  `ruff check .` → `All checks passed!`、`ruff format --check .` → `97 files already formatted`、
+  `python -m mypy` → `Success: no issues found in 77 source files`。
+- **零新增依赖**：只用 `requests` + stdlib，`requirements.txt` / `requirements.lock` **未改**。
+  `testcases/mes/`、`testcases/login/`、`testcases/contract/`、`testcases/ui/`、`apis/`、
+  `mock_server/`、`common/`、根 `conftest.py`、`login_app/`、CI workflow **全部未动**。
+- ⚠️ **未验证**：**没有在 Linux runner 上实测**（基线里的环境指纹是 Windows 本机，
+  且 CI 的 `pytest -m api -n 4 --dist loadfile` 会在 4 核 runner 上与其它 worker 抢 CPU，
+  采样被压慢的倍率无从得知）。详见
+  `docs/wave3-perf-baseline-handoff.md` 的「未验证项清单」。
+
+### 新增 —— 容量压测与拐点判定（波 3）
+
+这一批解决的是：仓库里只有**竞态判定**，没有任何东西能回答"能扛多少并发"。
+`testcases/mes/concurrency.py` 用 `threading.Barrier` 对齐启动、用 `spans` 时间线是否交叠
+判"会不会超卖"，2 个并发就能红；它不产出容量数字，也产不出——测的不是同一件事。
+
+新增 `perf/`，用 locust 施加**按用户数分梯度的持续负载**：
+
+- **`perf/locustfile.py`（新增）**：两个 User 类。`MesApiUser` 是读写混合（read : write = 8 : 1），
+  `LoginOnlyUser` 只打 `/auth/login`（量 PBKDF2 120_000 rounds 的 CPU 天花板）。
+  `wait_time = constant(0)`：用户数≈在途请求数，量的是**服务端吞吐上限**。
+  两个类由 runner **按类名指定**跑哪一个——让 locust 自动按权重分派的话，"50 用户"里会有
+  一半在打登录，两个场景的数字互相污染；用 `--tags` 过滤也不行，被过滤空的类照样占名额。
+- **`perf/run_load.py`（新增）**：起服务 → 多梯度发压 → 解析 locust CSV → 拐点判定 →
+  落 `summary.json` / `samples.jsonl` → 回收服务并留下回收证据。**`--concurrency-window-ms 0`**
+  起服务：`mock_server/services.py:101` 那个 120ms 人工窗口是给竞态用例用的教学 sleep，
+  压测不关掉的话 P95 里量的全是它（没有改被测代码，只是关掉一个环境开关）。
+- **`perf/run_load.ps1`（新增）**：一键入口，顺带把两处 Windows 地雷处理掉——
+  `PYTHONUTF8=1`（否则 locust 用 GBK 读 `pyproject.toml` 直接 exit=2）与
+  `PYTHONPATH` 三项（`pip --target` 装的 pywin32 不生效 `.pth`，少了 `win32\lib` 就
+  `ModuleNotFoundError: No module named 'pywintypes'`）。
+- **`requirements-perf.txt`（新增）**：只有 `locust==2.46.7`，**故意不并入 `requirements.txt`**。
+  后者是每个 CI job 都装的**门禁依赖集**，而 locust 会拖进 gevent 并 monkey-patch 标准库——
+  让单元测试与 UI 测试跑在被 patch 的运行时上，风险远大于收益。
+
+**实测容量结论（本机 i5-1240P，16 逻辑核，压测机与被测服务同机，4 梯度 × 2 次 × 20s）**：
+
+| 并发 | RPS | P50 | P95 | P99 | 错误率 | 服务端 5xx |
+|---|---|---|---|---|---|---|
+| 5 | 340.6 ~ 419.1 | 11~14ms | 22~24ms | 30~31ms | 0.00% | 0 |
+| 10 | 298.6 ~ 377.4 | 23~29ms | 54~65ms | 67~79ms | 0.00% | 0 |
+| 20 | 335.4 ~ 371.4 | 45~51ms | 104~115ms | 125~145ms | 0.00% | 0 |
+| 50 | 338.9 ~ 357.9 | 104~105ms | 205~230ms | 695~970ms | 0.02~0.06% | 2~6 |
+
+三个拐点**不在同一档**，所以分三行报，不合成一个"最大并发"（判据与数字一起写进
+`summary.json` 的 `knee` 字段，可复核）：
+
+- **吞吐 10 并发饱和**：5u→10u 的 RPS 不是变平而是**掉**了 10%~12%，之后 20u/50u 也再没超过 5u。
+- **延迟 10 并发恶化**：P95 从 22~24ms 跳到 54~65ms，越过"最低档 × 2"的判据线；
+  50u 时 P99 到 695~970ms。
+- **稳定性 50 并发出错**：50 档首次出现 2~6 次 500 / 连接重置，服务日志对应
+  `sqlite3.OperationalError: database is locked`（栈顶 `mock_server/db.py:296` 的 `BEGIN IMMEDIATE`）。
+  总错误率只有 0.02%~0.06%——**只看错误率会把这一档误判成健康**，所以 5xx 是单独数的、阈值取 0。
+
+**三条如实登记**：
+
+1. **压测机与被测服务同机**，所以绝对 RPS 与拐点档位都是**乐观上界**，真实跨网只会更差；
+   要拿生产规划的容量数得换独立压测机。
+2. **三个拐点里"SQLite 写锁"这一条是推断**：有 `database is locked` 的栈证据，但没做
+   "只跑读负载"的对照批次来隔离。
+3. **退料接口默认关闭**（`LOAD_INCLUDE_REVERSE=0`）：它在 10 并发下稳定 400，根因是
+   `mock_server/services.py:636` 的 check-then-act 竞态（`reverse_material` 没有并发窗口保护），
+   留在混合场景里会让"错误率"变成"容量不足 + 脚本踩中竞态"的混合物。要它的延迟数字
+   就单独跑，那一批的错误率含竞态，得在报告里说明。
+
+**不进 CI 阻塞门禁**：一批 ~200 秒且数字带 10% 量级的批次间噪声，拿它当 PR 门禁等于给每个 PR
+加一个随机红灯。新增 job `perf`（`.github/workflows/test.yml`）只在 `workflow_dispatch` 与
+`schedule` 触发，`continue-on-error: true`，把 `reports/perf/` 传 artifact 并把拐点 JSON
+贴进 Step Summary——产出是**给人读的容量结论**，不是通过/失败信号。
+手动命令：`pwsh -File perf/run_load.ps1`。
+
+### 新增 —— 分层门禁策略显式化（波 3）
+
+这一批改动的主题是：**把「哪个测试层阻塞、哪一步放行」从 workflow 里的 `continue-on-error` 行搬进文档，并让它可机器校验。**
+
+- **`docs/质量门禁策略.md`（新增）**：逐条写明全部 9 个 marker 与 6 个 job 的
+  **触发时机 → 是否阻塞 → 失败找谁 → 预算时长 → 依据**，并承接波 2 的 `flaky` / `quarantine` 处置策略。
+  文档里额外说清了两件只靠读 workflow 看不出来的事：
+  ①`smoke` / `regression` / `flaky` 是**横切标签而不是测试层**，它们标中的 36 / 64 / 33 条用例
+  全部落在 `api` / `mes` / `ui` 三个宿主层内（子集探测 outside = 0），所以 CI 里**没有** `-m smoke` 之类的 step；
+  ②`contract` 的 224 条**完全在宿主层之外**，因此必须有独立的 step。
+- **UI 不阻塞的理由、风险与退出条件写足了（`docs/质量门禁策略.md` 第六节）**：
+  现状只有一句"外部因素多"。展开为三条归因理由（失败归因不可靠 / 无可复现环境 / 耗时与不稳定互相放大）、
+  三类风险（静默腐烂、覆盖停止生长、报告靠自觉），以及**三条可判定的退出条件**——
+  A 改为本地站点即立即改；B 近 20 次 CI 的 UI step 非代码原因失败 ≤ 1 次；
+  C 站点改版表现为确定的契约失败。并列出改阻塞时要同步改的四处。
+- **`scripts/check_gate_policy.py`（新增）**：读 `pytest.ini` 的 markers、`.github/workflows/test.yml` 的
+  job / `timeout-minutes` / `continue-on-error`、以及策略文档三段 `<!-- gate-policy:... -->` 表格，
+  做四项双向校验：job 集合、阻塞性与超时、放行步骤清单、marker 归属，任一条对不上退出 1。
+  **纯标准库**（不 import PyYAML）：这份 workflow 只有 job/step 两层结构，而 YAML 1.1 会把顶格的
+  `on:` 解析成布尔 `True`、还得为此写补偿代码；缩进扫描更直白，也让脚本零依赖。
+  实测两种解析方式对 6 个 job 的 timeout 与豁免点判定**完全一致**。
+- **反向验证有红证**：实验 A 只把 `security` 改名成 `security-scan` 而不动文档 → 脚本报 4 项不一致、
+  exit=1；实验 B 只删掉 UI 那步的 `continue-on-error: true` 而不动文档 → 脚本报 2 项不一致、exit=1。
+  两次实验后 `git checkout` 还原，正常态复跑 exit=0。
+- **`pre-commit` job 里接上了这一步（只加严）**：工作流只新增一步 `python scripts/check_gate_policy.py`，
+  没有任何现有 job 从阻塞被改成非阻塞。
+- **`pytest.ini` 只补注释**（marker 名单与 `addopts` 语义逐字节不变）：指明各 marker 的归属文档、
+  以及「新增/改名 marker 必须同时改策略文档，否则 CI 红」。
+- **`README.md` / `CONTRIBUTING.md` 收敛到单一真值**：README 的 job 表与 flaky 段改为指向策略文档；
+  `CONTRIBUTING.md` 原文把 job 名与 marker 名混用（"`mes` / `login` 是阻塞的"其实是 job 名与 marker 名各说一半）、
+  且漏掉 `pre-commit` / `commit-convention`，现已改为以策略文档为准并给出准确的 6 job 速览。
+
+### 新增 —— 数据生命周期：失败兜底、TTL 清理、清理幂等（波 3）
+
+这一批处理的是**「测试数据收不回来」**：`data_factory` + `data_isolation` 的登记式回收
+和 8 张表快照校验都已经到位，缺的是**失败那一路**和**跨会话残留**。
+
+- **`testcases/mes/conftest.py`（修复，`7f74b6f`）**：`factory` 的 teardown 原本是直线代码
+  —— `chain_errors = ledger_balance_chain_errors(...)` → `assert not chain_errors` →
+  `actions = f.cleanup()`。**流水链一红，`cleanup()` 那行就永远走不到**，用例造的数据
+  全留在库里，会话收尾再报一次基线漂移，真正的原因被第二层红盖住。
+  改成两件事互不阻断：回收一定执行（`except BaseException`，覆盖 Ctrl-C），
+  失败**先打印再原样抛回**（不吞掉 —— 吞掉就等于让"没删干净"永远不可见）。
+  **承重性有红证**：把探针跑在修复前的 conftest 上，输出里**没有** `[数据回收]`，
+  并出现 `表 work_orders: 基线 0 行 -> 现在 1 行（差 +1）`、`表 stock_ledger: ... 差 +2`；
+  修复后只剩流水链那一条红。
+- **`testcases/mes/data_factory.py`（新增 `verify_clean()`）**：清理后再按登记过的
+  单号/编码逐条回查，返回**没被删掉的残留**供 teardown 断言。少了这一步，
+  一次没生效的 DELETE 会表现为"用例全绿、下一轮基线漂移"，报错指向下一轮。
+- **`testcases/mes/data_ttl.py`（新增）+ `scripts/mes_data_ttl.py`（新增）**：
+  按 TTL 清理跨会话残留。判据两级，**基线白名单是硬否决**：种子用户/物料/
+  `(物料, 仓库)` 键命中即永不删除，**哪怕它已经"过期"** —— 种子行的 `created_at`
+  就是建库那一刻，本来就老于任何 TTL，**只看时间判定，第一次跑就会把种子数据全删掉**。
+  另一级是「认得出是测试数据」：工厂标记正则 + 手写字面量清单
+  （仓库里有一批用例手写编码如 `FG-TEST-01`/`FG-X`/`MAT-ACL`/`WO-IDEM-*`，不含随机标记）。
+  认不出来的过期行**不删只报告**。默认 dry-run，`--ttl-hours` 可配，
+  `--fail-on-lingering` 可接 CI。
+- **`testcases/mes/test_data_lifecycle.py`（新增，9 条）**：用**真 pytest 子进程**跑两条
+  故意失败的探针（放在不匹配 `python_files = test_*.py` 的 `_fault_probe.py` /
+  `_leak_probe.py` 里，默认收集不到），把「兜底真的存在」「清理不彻底会被会话级断言抓到」
+  变成可执行证据；另有 TTL 清理前后 `row_counts` 对照、连跑两次的幂等、白名单保护、
+  时间戳两种真实形状的解析容错。
+- 回归数：`pytest -m mes` **55 → 64 passed**；`ruff check` / `ruff format --check` /
+  `mypy`（74 → 79 files）全过。
+
+> **踩过的坑，留在探针注释里**：故障探针**第一版**用"正文随便抛个异常"，
+> 它对着**修复前**的代码也是绿的 —— 正文异常根本不阻止 teardown 继续跑，
+> `cleanup()` 照样执行，**等于什么都没证明**。真正会挡住 `cleanup()` 的只有
+> "先断言、后回收"那个顺序，探针必须精确命中流水链断言。
 
 ### 修复 —— 依赖升级暴露的动态属性写法（requests 2.34 自带类型桩）
 
