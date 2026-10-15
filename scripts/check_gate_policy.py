@@ -60,10 +60,20 @@ JOB_LEVEL_VALUES = (NOT_BLOCKING,)
 # job 级豁免不属于任何一步，在放行清单里用这个固定的伪步骤名登记。
 JOB_LEVEL_STEP = "<job 级>"
 # 4 空格＝job 级键，8 空格＝step 级键。两者都是真豁免；更深的缩进是 run 块内的脚本内容，
-# 不是 YAML 键。注释行（`#` 开头）在两种缩进下都必须排除——test.yml 的 505/666 行就是
+# 不是 YAML 键。整行注释（`#` 开头）在两种缩进下都必须排除——test.yml 的 505/666 行就是
 # 靠 `#` 讲 continue-on-error 的注释，把它们当成豁免会让脚本凭空造出两个假门禁。
 JOB_LEVEL_COE_RE = re.compile(r" {4}continue-on-error:\s*(\S+)\s*$")
 STEP_LEVEL_COE_RE = re.compile(r" {8}continue-on-error:\s*(\S+)\s*$")
+# YAML 的行尾注释（`#` 前必须有空白），例如 `continue-on-error: true  # 试点`。
+# 不剥掉它，上面两条正则会因为 `$` 对不上而失配——真豁免又会被读成不存在，回到假绿。
+TRAILING_COMMENT_RE = re.compile(r"\s+#.*$")
+
+
+def strip_trailing_comment(raw: str) -> str:
+    """去掉 YAML 行尾注释；整行注释返回空串。"""
+    if raw.lstrip().startswith("#"):
+        return ""
+    return TRAILING_COMMENT_RE.sub("", raw)
 
 
 @dataclass(frozen=True)
@@ -196,26 +206,25 @@ def parse_workflow(text: str) -> dict[str, WorkflowJob]:
         step_name = "<步骤外>"
         for offset, raw in enumerate(lines[line_no - 1 : stop]):
             current = line_no + offset
-            # 注释行在两种缩进下都可能出现，而 test.yml 恰恰用注释解释 continue-on-error：
-            # 不排掉它们，脚本会把注释读成真豁免，凭空造出门禁事实。
-            if raw.lstrip().startswith("#"):
+            body = strip_trailing_comment(raw)
+            if not body:
                 continue
-            named = re.fullmatch(r" {6}- name:\s*(.+)", raw)
+            named = re.fullmatch(r" {6}- name:\s*(.+)", body)
             if named:
                 step_name = named.group(1).strip()
                 continue
-            if re.fullmatch(r" {6}- .*", raw):
+            if re.fullmatch(r" {6}- .*", body):
                 step_name = "<未命名步骤>"
                 continue
             if timeout is None:
-                found = re.fullmatch(r" {4}timeout-minutes:\s*(\d+)", raw)
+                found = re.fullmatch(r" {4}timeout-minutes:\s*(\d+)", body)
                 if found:
                     timeout = int(found.group(1))
-            job_level = JOB_LEVEL_COE_RE.fullmatch(raw)
+            job_level = JOB_LEVEL_COE_RE.fullmatch(body)
             if job_level:
                 relaxed_job = (job_level.group(1), current)
                 continue
-            step_level = STEP_LEVEL_COE_RE.fullmatch(raw)
+            step_level = STEP_LEVEL_COE_RE.fullmatch(body)
             if step_level:
                 relaxed.append((step_name, step_level.group(1), current))
         jobs[name] = WorkflowJob(
@@ -334,11 +343,15 @@ def check_blocking(workflow_jobs: dict[str, WorkflowJob], doc_jobs: dict[str, Do
         doc = doc_jobs[name]
         expected = job.blocking_choices
         if doc.blocking not in expected:
-            scope = "job 级" if job.relaxed_job is not None else "step 级"
+            if job.relaxed_job is not None:
+                found = f"workflow 有 job 级 continue-on-error（{job.exemptions_text}）"
+            elif job.relaxed_steps:
+                found = f"workflow 有 step 级 continue-on-error（{job.exemptions_text}）"
+            else:
+                found = "workflow 里没有任何 continue-on-error"
             report.bad(
                 f"{name} 阻塞性",
-                f"文档第 {doc.line} 行写「{doc.blocking}」，但 workflow 里有 {scope} continue-on-error"
-                f"（{job.exemptions_text}）→ 应写「{' 或 '.join(expected)}」",
+                f"文档第 {doc.line} 行写「{doc.blocking}」，但 {found} → 应写「{' 或 '.join(expected)}」",
             )
         else:
             report.ok(
