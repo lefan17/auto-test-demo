@@ -127,9 +127,9 @@ python scripts/check_commit_msg.py .git/COMMIT_EDITMSG
 - 涉及 `testcases/**` 断言改动的，PR 里必须说明**为什么改的是用例而不是实现**。
 - CI 必须全绿才能合并。**哪些阻塞、哪些只警告，以 [`docs/质量门禁策略.md`](docs/质量门禁策略.md)
   为准**——那份文档与 `.github/workflows/test.yml` 由 `python scripts/check_gate_policy.py`
-  逐条机器校验，改了 workflow 不改文档会红。一句话版：6 个 job 里 `lint` / `typecheck` /
+  逐条机器校验，改了 workflow 不改文档会红。一句话版：7 个 job 里 `lint` / `typecheck` /
   `pre-commit` / `commit-convention` 全阻塞，`test` 只放行 UI 那一步，`security`（pip-audit）
-  整体非阻塞，但红了要有人看。
+  整体非阻塞，但红了要有人看；`perf`（容量压测）只在手动与夜间触发、且 job 级非阻塞。
 
 ---
 
