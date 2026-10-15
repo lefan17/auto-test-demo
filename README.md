@@ -24,7 +24,7 @@
 | 安全扫描 | Dependabot（pip + github-actions 每周）+ CI 里的 pip-audit |
 | 容器化 | Dockerfile + docker-compose.yml（两个被测服务） |
 | 环境分层 | `TEST_ENV` 选择 dev / staging / prod（`common/config.py`） |
-| 持续集成 | GitHub Actions（6 个 job，含每周定时夜间回归） |
+| 持续集成 | GitHub Actions（7 个 job，含每周定时夜间回归与非阻塞容量压测） |
 
 ## 分层设计
 
@@ -540,10 +540,101 @@ python -m pytest -m perf -s
 
 它会打印 `旧值 → 新值` 的 diff，新增/移除端点单独标注。**基线放宽必须留痕**。
 只想看当前基线内容（不采样）：`python testcases/api/perf_baseline.py`（加 `--json` 打全文）。
+## 容量压测（perf/）
+
+**`testcases/mes/concurrency.py` 不是压测。** 它用 `threading.Barrier` 对齐启动、用 `spans`
+时间线是否交叠来判**竞态会不会发生**，回答的是"会不会超卖/丢更新"，2 个并发就能红。
+它不回答"能扛多少并发"。两件事各管各的：
+
+| | `testcases/mes/concurrency.py` | `perf/`（locust） |
+|---|---|---|
+| 问什么 | 会不会竞态（超卖 / 丢更新） | 能扛多少并发，RPS 何时到顶、P95 何时恶化 |
+| 负载 | 一次性脉冲，Barrier 对齐 | 持续负载，按用户数分梯度，20s/轮 |
+| 判据 | 时间线交叠 + 业务不变量 | RPS / P50 / P95 / P99 / 错误率 / 5xx 次数 |
+| 产出 | 布尔结论 + 时间线证据 | 容量数字表 + 拐点档位 |
+| 跑在 | `pytest -m mes`（CI 每次提交，阻塞门禁） | `perf/run_load.ps1`（手动 / 夜间，**不阻塞**） |
+
+压测不能替代竞态判定，反过来也一样。混合场景里曾经带上 `POST /inventory/reverse`，
+10 并发就稳定出 400——那是 `mock_server/services.py:636` 的 check-then-act 竞态被踩中，
+不是容量问题；留在压测里只会让"错误率"变成两件事的混合物，所以默认关掉
+（要它的延迟数字就 `LOAD_INCLUDE_REVERSE=1` 单独跑）。
+
+### 怎么跑
+
+```powershell
+# 一键：起服务 → 4 个梯度 × 2 次发压 → 落结果 → 回收服务进程
+pwsh -File perf/run_load.ps1
+
+# 快速验证链路（约 20s）
+pwsh -File perf/run_load.ps1 -Users "5,10" -RunTime 10s -Repeat 1 -Label quick
+
+# 只看计划不发压 / 压登录接口（PBKDF2 120k rounds 的 CPU 天花板）
+pwsh -File perf/run_load.ps1 -ListOnly
+pwsh -File perf/run_load.ps1 -UserClasses LoginOnlyUser -Label login
+```
+
+非 Windows 或要自己指定解释器时，直接用 runner（它自己会拼好 PYTHONPATH 与 PYTHONUTF8）：
+
+```bash
+python perf/run_load.py --users 5,10,20,50 --run-time 20s --repeat 2 --label my-run
+```
+
+locust **故意不写进 `requirements.txt`**（见 `requirements-perf.txt` 文件头）：它是压测工具
+而不是测试依赖，会拖进 gevent 并 monkey-patch 标准库，并入 CI 每个 job 都要装的依赖集
+风险大于收益。要跑压测的人显式装：
+
+```powershell
+& "<python>" -m pip install -r requirements-perf.txt   # 仅 locust==2.46.7
+```
+
+产出落在 `reports/perf/<时间戳>-<label>/`（`reports/` 已被 `.gitignore` 忽略）：
+`summary.json` 是梯度聚合 + 拐点判定 + 服务回收证据，`samples.jsonl` 是逐轮明细，
+`u<并发>-r<第几次>_stats.csv` 是 locust 原始统计（`Aggregated` 行在最后一行）。
+
+### 本机实测（**实测口径，不是通用结论**）
+
+ADMIN 角色、读写混合（read:write = 8:1）、`wait_time = 0`（用户数≈在途请求数，量的是
+服务端吞吐上限）、`--concurrency-window-ms 0`、单轮 20s、4 梯度 × 2 次取中位数：
+
+| 并发 | RPS | P50 | P95 | P99 | 错误率 | 服务端 5xx |
+|---|---|---|---|---|---|---|
+| 5 | 340.6 ~ 419.1 | 11~14ms | 22~24ms | 30~31ms | 0.00% | 0 |
+| 10 | 298.6 ~ 377.4 | 23~29ms | 54~65ms | 67~79ms | 0.00% | 0 |
+| 20 | 335.4 ~ 371.4 | 45~51ms | 104~115ms | 125~145ms | 0.00% | 0 |
+| 50 | 338.9 ~ 357.9 | 104~105ms | 205~230ms | 695~970ms | 0.02~0.06% | 2~6 |
+
+**拐点（两批一致，判据与结论一起写在 `summary.json` 的 `knee` 里）**：
+
+- **吞吐在 10 并发就饱和**：5u→10u 的 RPS 不是变平而是**掉**了 10%~12%，之后 20u/50u 也再没
+  超过 5u（判据：相邻梯度 RPS 增幅 < 20% 即算饱和）。
+- **延迟拐点在 10 并发**：P95 从 22~24ms 跳到 54~65ms，越过"最低档 × 2"的判据线。
+  50u 时 P99 到 695~970ms，P50 也涨到 104~105ms。
+- **稳定性拐点在 50 并发**：5/10/20 档服务端故障为 0，50 档出现 2~6 次 500 或连接重置，
+  服务日志对应 `sqlite3.OperationalError: database is locked`（栈顶 `mock_server/db.py:296`
+  的 `BEGIN IMMEDIATE`）。**总错误率只有 0.02%~0.06%，只看错误率会把这一档误判成健康** ——
+  所以 5xx 是单独数的，阈值取 0。
+- 三个拐点不在同一档（10 / 10 / 50），所以分三行报，不合成一个"最大并发"。
+
+同梯度跑两次的批次内波动 ≤ 11.7%（P95 与 RPS 都记在 `summary.json` 的
+`p95_spread_ratio` / `rps_spread_ratio`），拐点档位在两批之间稳定复现；
+但**批次之间**同梯度能差到 20%+，所以**读趋势与拐点档位，不要读绝对数字**。
+
+### 两条必须知道的局限
+
+1. **压测机与被测服务同机（`127.0.0.1`）**。方向相反的偏差同时存在：走 loopback 省掉了
+   真实网络 RTT 与网卡开销（→ 数字偏**乐观**），但 locust 的 gevent 与 uvicorn 抢同样的
+   CPU、库文件同盘（→ 偏**悲观**）。净结论：绝对 RPS 与拐点档位都应当读作**乐观上界**，
+   真实跨网部署只会更差。要拿生产规划的容量数，得换独立压测机 + 真实网络 +
+   `LOAD_THINK_TIME_MS` 模拟思考时间 + 单轮 ≥5 分钟。
+2. **服务端是 SQLite（WAL + `BEGIN IMMEDIATE`）**，写操作天然串行。50 档的 500 来自写锁，
+   不是应用逻辑错。换库（Postgres 等）才能看到应用层的真实容量。
+
+完整论证（含每个结论的原始 `Aggregated` 行、失败明细、未验证项）在
+[`docs/wave3-load-handoff.md`](docs/wave3-load-handoff.md)。
 
 ## 持续集成
 
-推送到 `main`、开 PR、手动点按钮，以及**每周一凌晨的定时回归**都会触发。共 **6 个 job**：
+推送到 `main`、开 PR、手动点按钮，以及**每周一凌晨的定时回归**都会触发。共 **7 个 job**：
 
 **每个 job 的阻塞性、每个测试层的触发时机与预算时长，以 [`docs/质量门禁策略.md`](docs/质量门禁策略.md) 为准**——
 那份文档不是说明文，是门禁的一部分：`python scripts/check_gate_policy.py` 会拿本文档里的 job 表、
@@ -558,6 +649,7 @@ python -m pytest -m perf -s
 | `security` | `pip-audit --requirement requirements.lock --strict` | ❌ 不拦（见下） |
 | `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂；再跑 `scripts/check_gate_policy.py` 校验门禁策略没腐烂 | ✅ 拦 |
 | `commit-convention` | 拿最近 30 条真实提交跑 `scripts/check_commit_msg.py` | ✅ 拦（逐条警告，不聚合） |
+| `perf` | 容量压测 4 梯度 × 2 次 × 20s，上传 `reports/perf/` 并在 Step Summary 里贴拐点 JSON。**仅 `workflow_dispatch` / `schedule` 触发，push 与 PR 不跑** | ❌ 不拦（见下） |
 
 报告在 Actions 页面的 Artifacts 里下载（`allure-report`），失败截图在 `ui-screenshots`。
 
@@ -580,6 +672,11 @@ python -m pytest -m perf -s
   正确做法是让它红并**通知到人**，由人决定升级还是接受风险。
   扫的是 `requirements.lock` 而不是 `requirements.txt`：锁文件里是**实际会被安装的完整传递依赖树**，
   而绝大多数 CVE 出现在传递依赖上（urllib3 / certifi / anyio 之类），只扫直接依赖等于漏掉大半攻击面。
+- **`perf` job 非阻塞、且 push/PR 不触发**：一批压测 4 梯度 × 2 次 × 20s 要 ~200 秒，而数字
+  天然带 10% 量级的批次间噪声（见上文）。拿它当 PR 门禁等于给每个 PR 加一个"随机红灯"，
+  结局一定是被人加 `continue-on-error` 或者干脆删掉。它的产出是**给人读的容量结论**
+  （`summary.json` 的 `knee` 会贴进 Step Summary），不是通过/失败信号。
+  要跑就手动点按钮，或跟周一夜间回归一起跑。
 - **Allure 用官方命令行生成，不用第三方 Docker action**。原来用的
   `simple-elf/allure-report-action@v1.9` 依赖镜像 `openjdk:8-jre-alpine`，
   该镜像已被 Docker Hub 下架，报 `failed to resolve source metadata`，

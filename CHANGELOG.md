@@ -98,6 +98,66 @@
 - **`README.md` / `CONTRIBUTING.md` 收敛到单一真值**：README 的 job 表与 flaky 段改为指向策略文档；
   `CONTRIBUTING.md` 原文把 job 名与 marker 名混用（"`mes` / `login` 是阻塞的"其实是 job 名与 marker 名各说一半）、
   且漏掉 `pre-commit` / `commit-convention`，现已改为以策略文档为准并给出准确的 6 job 速览。
+### 新增 —— 容量压测与拐点判定（波 3）
+
+这一批解决的是：仓库里只有**竞态判定**，没有任何东西能回答"能扛多少并发"。
+`testcases/mes/concurrency.py` 用 `threading.Barrier` 对齐启动、用 `spans` 时间线是否交叠
+判"会不会超卖"，2 个并发就能红；它不产出容量数字，也产不出——测的不是同一件事。
+
+新增 `perf/`，用 locust 施加**按用户数分梯度的持续负载**：
+
+- **`perf/locustfile.py`（新增）**：两个 User 类。`MesApiUser` 是读写混合（read : write = 8 : 1），
+  `LoginOnlyUser` 只打 `/auth/login`（量 PBKDF2 120_000 rounds 的 CPU 天花板）。
+  `wait_time = constant(0)`：用户数≈在途请求数，量的是**服务端吞吐上限**。
+  两个类由 runner **按类名指定**跑哪一个——让 locust 自动按权重分派的话，"50 用户"里会有
+  一半在打登录，两个场景的数字互相污染；用 `--tags` 过滤也不行，被过滤空的类照样占名额。
+- **`perf/run_load.py`（新增）**：起服务 → 多梯度发压 → 解析 locust CSV → 拐点判定 →
+  落 `summary.json` / `samples.jsonl` → 回收服务并留下回收证据。**`--concurrency-window-ms 0`**
+  起服务：`mock_server/services.py:101` 那个 120ms 人工窗口是给竞态用例用的教学 sleep，
+  压测不关掉的话 P95 里量的全是它（没有改被测代码，只是关掉一个环境开关）。
+- **`perf/run_load.ps1`（新增）**：一键入口，顺带把两处 Windows 地雷处理掉——
+  `PYTHONUTF8=1`（否则 locust 用 GBK 读 `pyproject.toml` 直接 exit=2）与
+  `PYTHONPATH` 三项（`pip --target` 装的 pywin32 不生效 `.pth`，少了 `win32\lib` 就
+  `ModuleNotFoundError: No module named 'pywintypes'`）。
+- **`requirements-perf.txt`（新增）**：只有 `locust==2.46.7`，**故意不并入 `requirements.txt`**。
+  后者是每个 CI job 都装的**门禁依赖集**，而 locust 会拖进 gevent 并 monkey-patch 标准库——
+  让单元测试与 UI 测试跑在被 patch 的运行时上，风险远大于收益。
+
+**实测容量结论（本机 i5-1240P，16 逻辑核，压测机与被测服务同机，4 梯度 × 2 次 × 20s）**：
+
+| 并发 | RPS | P50 | P95 | P99 | 错误率 | 服务端 5xx |
+|---|---|---|---|---|---|---|
+| 5 | 340.6 ~ 419.1 | 11~14ms | 22~24ms | 30~31ms | 0.00% | 0 |
+| 10 | 298.6 ~ 377.4 | 23~29ms | 54~65ms | 67~79ms | 0.00% | 0 |
+| 20 | 335.4 ~ 371.4 | 45~51ms | 104~115ms | 125~145ms | 0.00% | 0 |
+| 50 | 338.9 ~ 357.9 | 104~105ms | 205~230ms | 695~970ms | 0.02~0.06% | 2~6 |
+
+三个拐点**不在同一档**，所以分三行报，不合成一个"最大并发"（判据与数字一起写进
+`summary.json` 的 `knee` 字段，可复核）：
+
+- **吞吐 10 并发饱和**：5u→10u 的 RPS 不是变平而是**掉**了 10%~12%，之后 20u/50u 也再没超过 5u。
+- **延迟 10 并发恶化**：P95 从 22~24ms 跳到 54~65ms，越过"最低档 × 2"的判据线；
+  50u 时 P99 到 695~970ms。
+- **稳定性 50 并发出错**：50 档首次出现 2~6 次 500 / 连接重置，服务日志对应
+  `sqlite3.OperationalError: database is locked`（栈顶 `mock_server/db.py:296` 的 `BEGIN IMMEDIATE`）。
+  总错误率只有 0.02%~0.06%——**只看错误率会把这一档误判成健康**，所以 5xx 是单独数的、阈值取 0。
+
+**三条如实登记**：
+
+1. **压测机与被测服务同机**，所以绝对 RPS 与拐点档位都是**乐观上界**，真实跨网只会更差；
+   要拿生产规划的容量数得换独立压测机。
+2. **三个拐点里"SQLite 写锁"这一条是推断**：有 `database is locked` 的栈证据，但没做
+   "只跑读负载"的对照批次来隔离。
+3. **退料接口默认关闭**（`LOAD_INCLUDE_REVERSE=0`）：它在 10 并发下稳定 400，根因是
+   `mock_server/services.py:636` 的 check-then-act 竞态（`reverse_material` 没有并发窗口保护），
+   留在混合场景里会让"错误率"变成"容量不足 + 脚本踩中竞态"的混合物。要它的延迟数字
+   就单独跑，那一批的错误率含竞态，得在报告里说明。
+
+**不进 CI 阻塞门禁**：一批 ~200 秒且数字带 10% 量级的批次间噪声，拿它当 PR 门禁等于给每个 PR
+加一个随机红灯。新增 job `perf`（`.github/workflows/test.yml`）只在 `workflow_dispatch` 与
+`schedule` 触发，`continue-on-error: true`，把 `reports/perf/` 传 artifact 并把拐点 JSON
+贴进 Step Summary——产出是**给人读的容量结论**，不是通过/失败信号。
+手动命令：`pwsh -File perf/run_load.ps1`。
 
 ### 新增 —— 认证层与契约驱动（波 1）
 
