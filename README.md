@@ -326,6 +326,51 @@ pytest --html=report.html --self-contained-html
 
 设计与契约细节见 `docs/login-test-cases.md`、`docs/login-contract.md`。
 
+### 用例编号与禅道上报的起点
+
+**编号目前只有 login 一个套件有，不是全仓都有。** `LC-01`~`LC-30` 与
+`docs/login-test-cases.md` 的 30 行表格一一对应；其余套件（`api`/`contract`/`mes`/`ui`）
+一条编号都没有——这个缺口本身就是"编号体系成熟度"的证据，所以它被显式统计出来
+而不是被含糊掉。`python scripts/case_index.py` 实跑（产物 `reports/case-index.json`）：
+
+| 口径 | 实测数字 |
+|---|---|
+| 已登记为用例编号的前缀 | `LC`（30 个编号 / 17 个函数 / 27 个 nodeid） |
+| 一条 nodeid 承载多个编号 | `test_lc22_to_lc25_decision_table` → LC-22、LC-23、LC-24、LC-25 |
+| 未解析（抽到编号却找不到 nodeid） | 0 |
+| 无编号 nodeid（装全依赖 + 波 3 全部合入） | **353**：contract 224、mes 64、api 49、ui 14、login 2 |
+
+> **无编号那一行的数字随收集范围变，写死会过期——三组数字都对，差的是"跑在哪个树"。**
+> 同一台机器上：本机没装 `schemathesis` 时（`test_schemathesis_properties.py` 收集报错）
+> 是 181 条收集 / **154** 条无编号（contract 36、mes 55、api 47、ui 14、login 2）；
+> 在本波工作副本里设 `PYTHONPATH` 指向 `pylibs` 后是 369 条收集 / **342** 条无编号；
+> 合入波 3 全部改动（多出 `test_data_lifecycle.py`、`test_perf_baseline.py`）后是
+> 380 条收集 / **353** 条无编号——上表那一行就是最后这组。**脚本的原始输出才是权威**：
+> README 只钉"有编号的 30 / 27"这一组，它与装了哪些依赖、树里有哪些文件都无关，不会漂。
+> 复现：`python scripts/case_index.py`（它自己调 `python -m pytest --collect-only` 取 nodeid；
+> 收集不到的只如实报出，不猜）。
+
+两处容易误读的地方：
+
+- **编号埋在两种位置**，索引脚本必须同时处理：函数 docstring 首行
+  （`"""LC-01 正确用户名 + 正确密码 -> 200，返回 token 与 user。"""`）与
+  `parametrize` 的 id 字符串（`({}, "LC-06 缺全部字段")`）。LC-06~LC-13 八条挤在一个函数里、
+  LC-22~LC-25 四条挤在一个**没有 parametrize** 的函数里，所以"30 条编号 ↔ 29 个 nodeid
+  ↔ 27 个带编号 nodeid"三个数各不相同，差在哪条一行行解释得清（见 `docs/wave3-zentao-handoff.md` §4.1）。
+  判定表那 4 条共用 1 个 nodeid，意味着**缺陷定位精度到这一条为止**。
+- `DEF-xx` 与 `FIND-xx` 是**缺陷编号不是用例编号**（分别见 `docs/wave1-contract-handoff.md`
+  的真实缺陷清单与本节的 FIND 表），脚本不会把它们算进用例编号，只记为文本引用。
+
+「LC 编号 → 禅道用例 ID」的登记表是 `docs/zentao-case-map.json`（入库，因为它是需要评审的配置）。
+它的 `cases` 目前**为空，这是正确状态**——禅道用例要先在真实实例里建出来，才有 ID 可填，
+脚本对没登记的编号只跳过、不猜。
+
+要清楚口径：这是**上报与追溯的起点**，不是"已经双向追溯"。
+链路是「编号 → nodeid → junit/账本里的结局 → 禅道用例 → 缺陷」，其中禅道侧尚未接真实例，
+`scripts/report_to_zentao.py` 默认 `--dry-run` 只打印将要发送的 payload，真实上报要显式 `--send`
+且凭据只从 `ZENTAO_URL` / `ZENTAO_TOKEN` 环境变量读。逐条置信度与未验证项见
+`docs/wave3-zentao-handoff.md` §2 与 §6。
+
 ### 为什么把被测服务也放进仓库
 
 一般项目「测的是别人的服务」，这里把被测服务（`login_app/`）一起放进来，是为了让
