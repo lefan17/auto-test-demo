@@ -234,23 +234,31 @@ ___ ERROR at teardown of test_ledger_chain_failure_does_not_starve_cleanup ____
 
 ### 验收 3：TTL 清理识别超期测试数据、不动基线
 
-临时库（`init_db` 种子 + 注入 1 条过期工单/1 条过期批次/1 条过期物料+库存）：
+临时库的造法：`mock_server.db.configure(tmp)` 后 `init_db(reset=True)` 写入**真种子**，
+再用一条直连 sqlite3 的脚本注入 1 条过期（`created_at` 回拨 48 小时）工单
++ 其过期批次 + 1 条过期物料及其库存行（`WO-T-OLD001-1` / `MAT-T-OLD002-2`，
+形状按工厂规则，确保会被判据认出来）。脚本本身是临时取证用，**没有进仓库**。
+
+第一次实测 **BEFORE**（8 表行数）：
 
 ```
 BEFORE {'users': 5, 'materials': 6, 'work_orders': 1, 'production_batches': 1,
         'inspections': 0, 'stock': 6, 'stock_ledger': 0, 'idempotency_keys': 0}
+```
 
-python scripts/mes_data_ttl.py --db <tmp> -n 24            # dry-run
-  口径：早于 2026-10-14T11:39:13+08:00（TTL 24 小时）
+```
+python scripts/mes_data_ttl.py --db <tmp> -n 24            # dry-run，exit=0
+  口径：早于 2026-10-14T12:01:28+08:00（TTL 24 小时）
   模式：试运行（dry-run，未改动数据）；命中的过期测试数据 4 项 / 4 行
     - work_orders: WO-T-OLD001-1 —— 1 行（工单已过期）
     - production_batches: 1 行 —— 1 行（所属工单已过期）
     - stock: 1 行 —— 1 行（所属物料/工单已过期；种子库存按 (物料, 仓库) 键受保护）
     - materials: MAT-T-OLD002-2 —— 1 行（物料已过期且不在种子名单）
   受白名单保护的行数：{'users': 5, 'materials': 5, 'stock': 5}
-exit=0
+  非基线残留 4 处（试运行未删（含上面已命中的过期项））：
+  ...
 
-python scripts/mes_data_ttl.py --db <tmp> -n 24 --apply   # 第一次
+python scripts/mes_data_ttl.py --db <tmp> -n 24 --apply   # 第一次，exit=0
   模式：已执行删除；命中的过期测试数据 4 项 / 4 行
   受白名单保护的行数：{'users': 5, 'materials': 5, 'stock': 5}
     materials: 6 -> 5
@@ -258,11 +266,22 @@ python scripts/mes_data_ttl.py --db <tmp> -n 24 --apply   # 第一次
     production_batches: 1 -> 0
     stock: 6 -> 5
   非基线残留：无（库已回到基线口径）
-exit=0
 ```
 
-**基线对照数字**：`materials 5/5`、`stock 5/5`、`users 5/5` 清理前后**完全不变**；
-4 张残留表清零。
+**基线对照数字（清理前后）**：
+
+| 表 | BEFORE | AFTER | 判定 |
+|---|---|---|---|
+| `users` | 5 | 5 | 种子白名单，**未动**（`受白名单保护` 里报 5） |
+| `materials` | 6 | 5 | 只删了 1 条过期测试物料，5 条种子**未动** |
+| `stock` | 6 | 5 | 只删了测试物料的库存行，5 行种子库存按 `(物料, 仓库)` 键**未动** |
+| `work_orders` | 1 | 0 | 过期测试工单被删 |
+| `production_batches` | 1 | 0 | 随父工单级联删 |
+| `inspections` / `stock_ledger` / `idempotency_keys` | 0 | 0 | 本来就没有 |
+
+dry-run 里那句"非基线残留 4 处"是**如实的**：试运行没删，上面命中的 4 项当然还在库里。
+措辞在 `data_ttl.py:471-473` 特意区分了"试运行未删"与"未过期/未确认不删"——
+否则那 4 行会被读成"这些永远不会删"。
 
 ### 验收 4：幂等（连跑两次）
 
