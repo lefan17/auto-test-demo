@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import random
+import sqlite3
 import string
 from pathlib import Path
 
@@ -337,8 +338,6 @@ class DataFactory:
         if self.cleanup_orders or self.cleanup_materials or self.cleanup_ledger_owners:
             conn = None
             try:
-                import sqlite3
-
                 conn = sqlite3.connect(str(self.db_path), timeout=10.0)
                 # 外键检查打开：这里删的是父表，如果还有子行引用它，
                 # 我们希望当场报错，而不是静默留下一堆孤儿行
@@ -397,6 +396,43 @@ class DataFactory:
                 if conn is not None:
                     conn.close()
         return actions
+
+    def verify_clean(self) -> list[str]:
+        """回收之后再查一遍库，返回**没被删掉的残留**（供 teardown 断言）。
+
+        为什么必须有这一步：上面的 DELETE 只是"发出去的意图"，执行结果只能靠复核才
+        知道。少了它，一次没生效的删除会表现为"用例全绿、下一轮基线漂移"——
+        报错信息指向下一轮，跟真正的原因隔了一层。
+        所以这里按登记过的单号/物料编码逐条回查，残余一并报出，绝不静默吞掉。
+        """
+        residues: list[str] = []
+        if not (self.cleanup_orders or self.cleanup_materials or self.cleanup_ledger_owners):
+            return residues
+        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+        try:
+            for order_no in self.cleanup_orders:
+                still = conn.execute("SELECT COUNT(*) FROM work_orders WHERE order_no = ?", (order_no,)).fetchone()[0]
+                if still:
+                    residues.append(f"work_orders 残留 {order_no}")
+                ledger = conn.execute(
+                    "SELECT COUNT(*) FROM stock_ledger WHERE work_order_no = ?", (order_no,)
+                ).fetchone()[0]
+                if ledger:
+                    residues.append(f"stock_ledger 残留 {ledger} 条流水（归属 {order_no}）")
+            for owner in self.cleanup_ledger_owners:
+                ledger = conn.execute(
+                    "SELECT COUNT(*) FROM stock_ledger WHERE work_order_no IS ?", (owner,)
+                ).fetchone()[0]
+                if ledger:
+                    residues.append(f"stock_ledger 残留 {ledger} 条流水（归属 {owner!r}）")
+            for code in self.cleanup_materials:
+                for table, column in (("materials", "material_code"), ("stock", "material_code")):
+                    still = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (code,)).fetchone()[0]
+                    if still:
+                        residues.append(f"{table} 残留 {code}")
+        finally:
+            conn.close()
+        return residues
 
 
 # 行数/库存快照的口径集中在 data_isolation.py，这里只做转发，

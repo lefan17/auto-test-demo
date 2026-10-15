@@ -75,19 +75,48 @@ def factory(mes, mes_server) -> DataFactory:
     `cleanup()` 会把用例自己造的流水行删掉，等会话收尾取快照时流水表已经空了，
     "只 UPDATE 流水金额"这类错账再也无从比对（见 data_isolation 的模块注释）。
     流水只增不改、行还在的时候是唯一能验它的时点，而这个时点就在回收之前。
+
+    兜底（为什么长成这样）：
+    早先这里是"先断言流水链、再 cleanup()"的直线代码 —— 断言一旦失败，
+    `cleanup()` 那行就永远走不到，用例造的数据全留在库里。真正的原因（账实不符）
+    反而被"会话收尾行数对不上"这层噪声盖住，排查方向被指到别处。
+    所以现在两件事互不阻断：回收**一定**执行；回收结果（含残留）与流水链
+    各自在自己的地方报出来。回收本身如果抛异常，也先打印再原样抛回，不吞掉 ——
+    吞掉就等于让"数据没删干净"这件事永远不可见。
     """
     f = DataFactory(mes, mes_server.root_url, mes_server.db_path)
     yield f
+
     chain_errors = ledger_balance_chain_errors(mes_server.db_path)
+    cleanup_error: BaseException | None = None
+    try:
+        actions = f.cleanup()
+    except BaseException as exc:  # 兜底要覆盖一切中断（含 KeyboardInterrupt），随后原样抛回
+        actions = []
+        cleanup_error = exc
+    try:
+        residues = f.verify_clean()
+    except BaseException as exc:  # 复核失败本身也要报，但不能反过来把回收的异常盖掉
+        residues = []
+        if cleanup_error is None:
+            cleanup_error = exc
+
+    if actions:
+        print("\n[数据回收] " + "；".join(actions))
+    if cleanup_error is not None:
+        print(f"\n[数据回收失败] {type(cleanup_error).__name__}: {cleanup_error}")
+        raise cleanup_error
+    assert not residues, (
+        "用例结束时数据没有回收干净 —— 明细在下面：\n  " + "\n  ".join(residues) + "\n"
+        "排查方向：cleanup() 的 DELETE 没生效（比如登记的单号/编码跟库里存的不一致），"
+        "或者用例绕开 factory 直接发请求造了数据却登记到了别处。"
+    )
     assert not chain_errors, (
         "流水账面余额与实际库存对不上（账实不符）—— 明细在下面：\n"
         + "\n".join(chain_errors)
         + "\n排查方向：写流水时余额没有按'当时的真实账面'计算，"
         "或者有人在事务外直接 UPDATE 了 stock_ledger 的金额列。"
     )
-    actions = f.cleanup()
-    if actions:
-        print("\n[数据回收] " + "；".join(actions))
 
 
 # ---------- 隔离性断言用的基线 ----------
