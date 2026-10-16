@@ -87,9 +87,9 @@ playwright install chromium
 > pip install -r requirements.lock
 > ```
 >
-> 两个文件的分工：`requirements.txt` 是**人维护的**直接依赖（15 个，全部 `==` 钉死版本），
+> 两个文件的分工：`requirements.txt` 是**人维护的**直接依赖（16 个，全部 `==` 钉死版本），
 > 它是唯一真值来源；`requirements.lock` 是 `pip-compile` 生成的**完整传递依赖树**
-> （225 行，含 anyio / certifi / urllib3 / greenlet 等几十个间接包）。
+> （188 行 / 61 个 pin，含 anyio / certifi / urllib3 / greenlet 等几十个间接包）。
 > 只锁直接依赖的话，传递依赖会随环境漂移——本地和 CI 装的不是同一棵树，
 > 于是"本地绿、CI 红"就会以随机事件的形式出现。
 > 改了 `requirements.txt` 之后要重新生成：
@@ -359,9 +359,12 @@ pytest --html=report.html --self-contained-html
 | 无编号 nodeid（装全依赖 + 两条线全部合入） | **478**：contract 224、platform 105、mes 64、api 49、ui 34、login 2 |
 
 > **无编号那一行的数字随收集范围变，写死会过期——三组数字都对，差的是"跑在哪个树"。**
-> 同一台机器上：本机没装 `schemathesis` 时（`test_schemathesis_properties.py` 收集报错）
-> 是 181 条收集 / **154** 条无编号（contract 36、mes 55、api 47、ui 14、login 2）；
-> 在本波工作副本里设 `PYTHONPATH` 指向 `pylibs` 后是 369 条收集 / **342** 条无编号；
+> 同一台机器上：依赖没装齐时（`test_schemathesis_properties.py` 收集报
+> `ModuleNotFoundError: No module named 'schemathesis'`）是 181 条收集 / **154** 条无编号
+> （contract 36、mes 55、api 47、ui 14、login 2）；
+> ~~在本波工作副本里设 `PYTHONPATH` 指向 `pylibs` 后是 369 条收集 / **342** 条无编号；~~
+> （**2026-10 订正**：`pylibs` 这条前置已随 schemathesis 3.39.16 → 4.31.1 迁移消失——它现在
+> 是 `requirements.txt` 里的普通一行、装进 `.venv`，`PYTHONPATH` 不再需要。这一组数字只作历史记录。）
 > 合入波 3 全部改动（多出 `test_data_lifecycle.py`、`test_perf_baseline.py`）后是
 > 380 条收集 / **353** 条无编号（contract 224、mes 64、api 49、ui 14、login 2）；
 > 再合入 qaplat 与 mes_web 两条线后是 499 条收集 / **472** 条无编号；

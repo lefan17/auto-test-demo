@@ -26,8 +26,9 @@ LOGIN_SPEC_PATH = ROOT / "docs" / "openapi-login_app.json"
 HANDWRITTEN_CONTRACT_PATH = ROOT / "testcases" / "login" / "contract.py"
 
 # ==================== 属性测试规模 ====================
-# schemathesis 3.39 没有内建的 max-examples 环境变量（constants.py 里只有 SCHEMATHESIS_HOOKS /
-# SCHEMATHESIS_API_NAME / SCHEMATHESIS_BASE_URL / SCHEMATHESIS_WAIT_FOR_SCHEMA），
+# schemathesis 4.31（同 3.39）没有内建的 max-examples 环境变量：4.31.1 里
+# `--max-examples` 只是 CLI 选项，没有挂 envvar（全 wheel 的 os.environ 命中只有
+# NO_COLOR / SCHEMATHESIS_BASE_URL / SCHEMATHESIS_HOOKS / SCHEMATHESIS_BENCHMARK_SEED 等），
 # 所以规模控制由本模块自己做。默认值刻意取小：CI 里必须几十秒内跑完，
 # 想深挖就把 CONTRACT_MAX_EXAMPLES 调大，或 CONTRACT_FULL=1 用放大量。
 DEFAULT_MAX_EXAMPLES = 8
