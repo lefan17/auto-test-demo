@@ -777,3 +777,103 @@ jobs:
             python -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding='utf-8'))['knee'], ensure_ascii=False, indent=2))" "${latest}summary.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 在线报表（GitHub Pages）
+  # ---------------------------------------------------------------------------
+  # 为什么单独一个 job：它既不测代码也不产出测试结论，只把 qaplat 平台层的
+  # HTML 报表发布到 gh-pages 分支。混进 test job 会让"报表没发出去"表现为
+  # "测试失败"，而这两件事的排查方向完全不同。
+  #
+  # 为什么 job 级 continue-on-error（非阻塞）：它只决定"在线报表更新没更新"，
+  # 与这份代码能不能合并无关。发布依赖的是外部状态（gh-pages 分支、Pages 服务、
+  # token 的 contents: write 权限），让这些获得把整条流水线弄红的权力，
+  # 最后一定是有人把它删掉。
+  #
+  # 为什么报表在 CI 里现场生成而不是提交进仓库：qaplat/.cache/ 的语义是
+  # "本机跑过什么"的历史状态（见 .gitignore 里的注释），属于过程产物，
+  # 不进 main 的历史。CI 上是一份全新检出，没有这个目录，所以这里现跑
+  # registry build → drift record → report 三步生成报表目录，再整目录发布。
+  #
+  # 为什么发布用 force push：每次都在临时目录里 git init 一个只含这一份
+  # 报表快照的新仓库，再 force push 到 gh-pages。重复跑不会冲突，也不会把
+  # gh-pages 堆成一长串"更新报表"的提交——它只承载产物，不需要保留历史。
+  pages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    # 仓库默认的 workflow 权限是只读，推 gh-pages 必须显式放开 contents: write。
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: 生成 qaplat 报表
+        run: |
+          set -euo pipefail
+          # 三步都走 qaplat 自己的 CLI：覆盖矩阵（含平台自测排除）、
+          # 契约漂移检查、静态 HTML 报表。报表每页自包含，必须整目录发布，
+          # 否则页面之间的导航会变成死链。
+          python -m qaplat.cli registry build
+          python -m qaplat.cli drift record --commit "${GITHUB_SHA::7}"
+          python -m qaplat.cli report --out qaplat/.cache/report
+          ls -l qaplat/.cache/report
+
+      - name: 发布到 gh-pages
+        id: publish
+        # PR 上不发布：PR 的内容未必会进 main，往 gh-pages 推等于提前发布
+        # 一个可能被否决的版本。push main / 手动 / 夜间三种触发源照常发布。
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          publish_dir="$(mktemp -d)"
+          cp -r qaplat/.cache/report/. "$publish_dir"/
+          cd "$publish_dir"
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "docs: 更新 qaplat 在线报表（${GITHUB_SHA::7}）"
+          git push -q --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+
+      - name: 报表摘要
+        if: always()
+        run: |
+          {
+            echo "### 在线报表"
+            echo ""
+            if [ "${{ steps.publish.outcome }}" = "success" ]; then
+              echo "已发布：https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+            elif [ "${{ steps.publish.outcome }}" = "skipped" ]; then
+              echo "PR 上不发布（gh-pages 只由 push main、手动与夜间触发的运行更新）。"
+            else
+              echo "发布未成功（本 job 不阻塞流水线）：见上一步日志。"
+            fi
+            echo ""
+            echo "| 页面 | 回答的问题 |"
+            echo "|---|---|"
+            echo "| \`index.html\` | 最近一轮、通过率、累计轮次、接口覆盖 |"
+            echo "| \`runs.html\` | 最近几轮的状态 |"
+            echo "| \`coverage.html\` | 哪些 operationId 还没有用例覆盖 |"
+            echo "| \`attribution.html\` | 红灯里哪些是真回归、哪些是环境问题 |"
+            echo "| \`drift.html\` | 契约基准有没有被悄悄改 |"
+            echo ""
+            echo "> \`runs.html\` 与 \`attribution.html\` 的内容来自 qaplat 度量库，"
+            echo "> 而 CI 每次都是全新检出，所以没有轮次记录时它们显示空状态。"
+            echo "> 轮次记录随 \`qaplat gate --layer <层>\` 的调用积累。"
+          } >> "$GITHUB_STEP_SUMMARY"

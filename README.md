@@ -1,6 +1,11 @@
 # 接口 + UI + 业务全链路自动化测试框架
 
 [![Auto Test](https://github.com/lefan17/fullstack-test-framework/actions/workflows/test.yml/badge.svg)](https://github.com/lefan17/fullstack-test-framework/actions/workflows/test.yml)
+[![在线报表](https://img.shields.io/badge/%E5%9C%A8%E7%BA%BF%E6%8A%A5%E8%A1%A8-GitHub%20Pages-2ea44f)](https://lefan17.github.io/fullstack-test-framework/)
+
+> 📄 **在线测试报表（GitHub Pages）**：<https://lefan17.github.io/fullstack-test-framework/> —— 
+> qaplat 平台层生成的 5 页自包含 HTML（最近轮次、接口覆盖矩阵、失败归因、契约漂移），
+> 由 CI 的 `pages` job 在每次 push 到 `main` / 手动触发 / 夜间回归后重新生成并发布。
 
 基于 Python + pytest 的自动化测试框架，覆盖 **接口自动化**、**UI 自动化**、
 **带本地 Mock 后端的业务全链路测试**（状态机、乐观锁、幂等、并发竞态、Decimal 金额精度）
@@ -28,7 +33,7 @@
 | 安全扫描 | Dependabot（pip + github-actions 每周）+ CI 里的 pip-audit |
 | 容器化 | Dockerfile + docker-compose.yml（两个被测服务） |
 | 环境分层 | `TEST_ENV` 选择 dev / staging / prod（`common/config.py`） |
-| 持续集成 | GitHub Actions（7 个 job，含每周定时夜间回归与非阻塞容量压测） |
+| 持续集成 | GitHub Actions（8 个 job，含每周定时夜间回归、非阻塞容量压测与在线报表发布） |
 
 ## 分层设计
 
@@ -791,7 +796,7 @@ ADMIN 角色、读写混合（read:write = 8:1）、`wait_time = 0`（用户数�
 
 ## 持续集成
 
-推送到 `main`、开 PR、手动点按钮，以及**每周一凌晨的定时回归**都会触发。共 **7 个 job**：
+推送到 `main`、开 PR、手动点按钮，以及**每周一凌晨的定时回归**都会触发。共 **8 个 job**：
 
 **每个 job 的阻塞性、每个测试层的触发时机与预算时长，以 [`docs/质量门禁策略.md`](docs/质量门禁策略.md) 为准**——
 那份文档不是说明文，是门禁的一部分：`python scripts/check_gate_policy.py` 会拿本文档里的 job 表、
@@ -807,8 +812,11 @@ ADMIN 角色、读写混合（read:write = 8:1）、`wait_time = 0`（用户数�
 | `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂；再跑 `scripts/check_gate_policy.py` 校验门禁策略没腐烂 | ✅ 拦 |
 | `commit-convention` | 拿最近 30 条真实提交跑 `scripts/check_commit_msg.py` | ✅ 拦（逐条警告，不聚合） |
 | `perf` | 容量压测 4 梯度 × 2 次 × 20s，上传 `reports/perf/` 并在 Step Summary 里贴拐点 JSON。**仅 `workflow_dispatch` / `schedule` 触发，push 与 PR 不跑** | ❌ 不拦（见下） |
+| `pages` | 现场跑 `qaplat.cli` 三步生成报表，再把整目录 force push 到 `gh-pages`，更新上面的在线报表。**PR 上只生成、不发布**（PR 未必进 main，提前发布等于发错版本） | ❌ 不拦（见下） |
 
 报告在 Actions 页面的 Artifacts 里下载（`allure-report`），失败截图在 `ui-screenshots`。
+qaplat 平台的 5 页 HTML 报表除了进 Artifacts，还会被 `pages` job 发到
+<https://lefan17.github.io/fullstack-test-framework/>。
 
 ### 几个刻意的设计
 
@@ -834,6 +842,12 @@ ADMIN 角色、读写混合（read:write = 8:1）、`wait_time = 0`（用户数�
   结局一定是被人加 `continue-on-error` 或者干脆删掉。它的产出是**给人读的容量结论**
   （`summary.json` 的 `knee` 会贴进 Step Summary），不是通过/失败信号。
   要跑就手动点按钮，或跟周一夜间回归一起跑。
+- **`pages` job 非阻塞、且 PR 上不发布**：它既不在测代码也不产出测试结论，只把 qaplat 的
+  HTML 报表推到 `gh-pages` 分支。发布成功与否取决于外部状态（分支、Pages 服务、token 权限），
+  这些不该获得把流水线弄红的权力——否则结果和上面 `security` 一样，被人一删了事。
+  报表在 CI 上**现场生成**而不是从仓库里读：`qaplat/.cache/` 的语义是「本机跑过什么」的历史状态，
+  属过程产物，不进 `main` 的历史。PR 上只生成不发布：PR 的内容未必会进 `main`，
+  往 `gh-pages` 推等于提前发布一个可能被否决的版本。
 - **Allure 用官方命令行生成，不用第三方 Docker action**。原来用的
   `simple-elf/allure-report-action@v1.9` 依赖镜像 `openjdk:8-jre-alpine`，
   该镜像已被 Docker Hub 下架，报 `failed to resolve source metadata`，
@@ -856,7 +870,7 @@ ADMIN 角色、读写混合（read:write = 8:1）、`wait_time = 0`（用户数�
   用 4 秒换一份不确定性，不划算。
   **一句话：能不省的地方就不省——性能门禁和并发断言的价值全在于它说了实话。**
 - **每个 job 都有 `timeout-minutes`**：一个卡死的 job 不设上限会占满默认的 360 分钟，
-  把并发名额全部堵住。现在是 lint 10 / typecheck 15 / test 45 / security 15 / pre-commit 15 / commit-convention 10。
+  把并发名额全部堵住。现在是 lint 10 / typecheck 15 / test 45 / security 15 / pre-commit 15 / commit-convention 10 / perf 20 / pages 20。
 - **`concurrency` 只取消 PR 上的旧任务**：连续推 3 个提交修同一处时，
   前两次的流水线已经没有意义，让它们继续跑既占名额又会在 Actions 页面刷出一片过期的红叉。
   但 **`main` 上的 push 必须全部跑完**——每次合并到 main 都可能引入问题，漏掉任何一次都是"没测过就进主干"。
