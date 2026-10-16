@@ -923,6 +923,13 @@
       },
       "ValidationError": {
         "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
           "loc": {
             "items": {
               "anyOf": [
@@ -1193,6 +1200,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Body",
                 "type": "object"
               }
@@ -1253,6 +1261,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Me Api V1 Auth Me Get",
                   "type": "object"
                 }
@@ -1638,6 +1647,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Stock Api V1 Inventory Stock Get",
                   "type": "object"
                 }
@@ -3202,6 +3212,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Traceability Api V1 Work Orders  Order No  Traceability Get",
                   "type": "object"
                 }
