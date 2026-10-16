@@ -531,8 +531,8 @@ pytest -m login --cov=login_app --cov-report=term          TOTAL   88  13 85%
 python scripts/export_openapi.py --check 两份 spec [一致]（退出码 0）
 python -m mypy                          Success: no issues found in 109 source files
 python scripts/check_gate_policy.py     策略文档、test.yml、pytest.ini 三者一致（退出码 0）
-python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增 10 条）；
-                                        「代理回退判据」那条缺陷用例仍未补，补上后会先变 22/23（故意红）
+python tools/check_retry.py             当前 22/23，退出码 1（原 12 条 + 波 2 新增 10 条 + 第 23 条）；
+                                        第 23 条钉的是「代理回退判据」那个已知缺陷，所以它**故意红**
 ```
 
 > **合流（qaplat / mes_web）与批次 2 之后的采集口径**：上面这一块里，各行的 `passed` 数与耗时是**合入前**的实测。
@@ -592,14 +592,17 @@ python tools/check_retry.py             当前 22/22（原 12 条 + 波 2 新增
 > 接口用例打的是公网站（受网络和限流影响）。这也是为什么能落地的自动化
 > 大多把关键校验放在**本地可控的服务**上，公网练习站只作补充。
 
-> **为什么这里会短暂出现一次红**：第 13 条用例
+> **为什么这里会短暂出现一次红**：第 23 条用例
 > 「传输失败后的状态码重试不绕过代理」钉的是一个**已知未修的缺陷** ——
 > `apis/base.py` 的代理回退判据 `last_error is not None` 记的是「这个请求曾经出过传输失败」，
 > 而不是「上一次尝试就是传输失败」，于是一次传输失败之后，**由 5xx 触发的重试也会绕过用户显式配置的代理**。
+> 本条已按下面这个顺序落地：**先加用例、看它红（22/23，退出码 1）、代码留待后续再改** ——
+> 顺序倒了就没有证据链。它红的细节是三次请求带的 `proxies` 依次为
+> `[用户配置, {'http': None, 'https': None}, {'http': None, 'https': None}]`，
+> 第三次本该还原成用户配置。
 >
-> **先加用例、看它红、再改代码、再看它绿** —— 顺序倒了就没有证据链。
 > 完整步骤：该自检脚本是 `tools/check_retry.py`（每条自检都有编号注释，波 1 收工时有 12 条，
-> 波 2 之后是 22 条），补这一条时按同一格式接在末尾即可（编号会变成 23）；
+> 波 2 之后是 22 条，这条接在末尾成第 23 条）；
 > 它钉的分支在 `apis/base.py` 的 `request()` / `_should_retry()`。
 
 > 接口用例跑的是公网 `jsonplaceholder.typicode.com`。这个站会**限流**：

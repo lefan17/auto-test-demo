@@ -318,6 +318,46 @@ def main() -> int:
     print(f"  [{'OK' if ok22 else 'FAIL'}] 每个实例持有独立 RNG: {a._rng is not b._rng}")
     results.append(ok22)
 
+    # ---------------------------------------------------------------
+    # 23. 代理回退的判据：只有「上一次尝试就是传输失败」，才绕过代理。
+    #     这是 CHANGELOG「尚未修复的已知问题」里那条缺陷的钉子（当前故意红）。
+    # ---------------------------------------------------------------
+    user_proxies = {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+    bypass = {"http": None, "https": None}
+
+    def proxies_of(api, idx):
+        """这条路径上没有真实网络，所以「有没有绕过代理」只能看每次调用带的 proxies。"""
+        return api.session.request.call_args_list[idx].kwargs.get("proxies")
+
+    # 序列：传输失败 → 500 → 200。第 2 次绕过代理是回退功能本身（必须成立），
+    # 但第 3 次是「由状态码触发的重试」，此时上一次尝试拿到了响应、根本没碰代理，
+    # 所以用户显式配的代理必须被还原，不能继续绕过。
+    # 现实现把 `last_error is not None` 当判据，而它在拿到响应后从不复位 ——
+    # 它记的是「本次请求曾经出过传输失败」，于是第 3 次也绕过 —— 本条因此红。
+    prev_trust_env = os.environ.get("API_TRUST_ENV")
+    os.environ["API_TRUST_ENV"] = "1"
+    try:
+        results.append(
+            run_case(
+                "传输失败后的状态码重试不绕过代理",
+                "GET",
+                [requests.ConnectionError("boom"), make_response(500), make_response(200)],
+                expected_calls=3,
+                kwargs={"proxies": user_proxies},
+                inspect=lambda api, response: (
+                    proxies_of(api, 0) == user_proxies
+                    and proxies_of(api, 1) == bypass
+                    and proxies_of(api, 2) == user_proxies,
+                    f"三次请求带的 proxies: {[proxies_of(api, i) for i in range(3)]}",
+                ),
+            )
+        )
+    finally:
+        if prev_trust_env is None:
+            os.environ.pop("API_TRUST_ENV", None)
+        else:
+            os.environ["API_TRUST_ENV"] = prev_trust_env
+
     passed = sum(results)
     print(f"\n结果: {passed}/{len(results)} 通过")
     return 0 if passed == len(results) else 1
