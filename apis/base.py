@@ -164,6 +164,11 @@ class BaseApi:
         token_source: TokenSource | None = kwargs.pop("_token_source", None)
 
         last_error = None
+        # 「上一次尝试」是不是卡在传输层。它**不**等同于 `last_error is not None`：
+        # 后者一旦被赋过值就再也不复位，记的是「本次请求曾经出过传输失败」；
+        # 而代理回退要问的是「刚过去的那一次尝试有没有碰代理」——拿到响应就说明
+        # 没碰，代理不是这次失败的嫌疑对象，用户配的代理必须还原回去。
+        last_attempt_transport_failure = False
         retried = False  # 本次请求是否经过了重试（写进报告，便于区分"慢"和"抖"）
         reauthed = False  # 本次请求是否经过"401 → 换令牌 → 重放"
         # 本次请求实际用掉的令牌。401 之后要把它交给 provider：
@@ -178,9 +183,12 @@ class BaseApi:
             # 而代理对某些域名会直接掐断 TLS（报 UNEXPECTED_EOF_WHILE_READING）。
             # 直连往往反而是通的。手动把代理从这次请求里摘掉，比让人去猜
             # "是不是我用例写错了"友好得多。
+            # 判据是「上一次尝试」而不是「本次请求曾经」：一次传输失败之后的 5xx
+            # 重试，其上一次尝试是拿到响应的、根本没碰代理，就不该继续绕过——
+            # 否则用户显式配的代理会在后续所有重试里静默失效。
             req_kwargs = kwargs
             bypassed_proxy = False
-            if attempt > 0 and last_error is not None and os.getenv("API_TRUST_ENV", "1") == "1":
+            if attempt > 0 and last_attempt_transport_failure and os.getenv("API_TRUST_ENV", "1") == "1":
                 req_kwargs = {**kwargs, "proxies": {"http": None, "https": None}}
                 bypassed_proxy = True
             # 每次尝试都重新取令牌，而不是在进入循环前取一次。
@@ -206,6 +214,7 @@ class BaseApi:
                 # 请求大概率没被处理，重试是安全的。requests.SSLError 也继承自
                 # ConnectionError，所以代理掐 TLS 的情况会走到这里。
                 last_error = exc
+                last_attempt_transport_failure = True
                 logger.warning("<-- %s %s 传输失败(%d/%d): %s", method, url, attempt + 1, self.retries + 1, exc)
                 if attempt < self.retries:
                     # 传输失败时没有响应头，只能走退避（基数 0.5s，抖动，带上限）
@@ -214,6 +223,9 @@ class BaseApi:
                     continue
                 raise
 
+            # 拿到响应就复位：这一次尝试碰的是服务端而不是代理，所以下一次重试
+            # （无论由状态码还是由 401 触发）都不该再摘掉用户配的代理。
+            last_attempt_transport_failure = False
             elapsed_ms = (time.perf_counter() - start) * 1000
             logger.info("<-- %s %s [%s] %.0fms", method, url, response.status_code, elapsed_ms)
             if not response.ok:
