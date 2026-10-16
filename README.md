@@ -3,7 +3,7 @@
 [![Auto Test](https://github.com/lefan17/fullstack-test-framework/actions/workflows/test.yml/badge.svg)](https://github.com/lefan17/fullstack-test-framework/actions/workflows/test.yml)
 [![在线报表](https://img.shields.io/badge/%E5%9C%A8%E7%BA%BF%E6%8A%A5%E8%A1%A8-GitHub%20Pages-2ea44f)](https://lefan17.github.io/fullstack-test-framework/)
 
-> 📄 **在线测试报表（GitHub Pages）**：<https://lefan17.github.io/fullstack-test-framework/> —— 
+> 📄 **在线测试报表（GitHub Pages）**：<https://lefan17.github.io/fullstack-test-framework/>
 > qaplat 平台层生成的 5 页自包含 HTML（最近轮次、接口覆盖矩阵、失败归因、契约漂移），
 > 由 CI 的 `pages` job 在每次 push 到 `main` / 手动触发 / 夜间回归后重新生成并发布。
 
@@ -524,7 +524,7 @@ pytest -m login                           29 passed, 476 deselected in  2.58s
 pytest -m contract                       213 passed, 281 deselected, 11 xfailed in 18.69s
 pytest -m perf                             2 passed, 503 deselected in  4.53s
 pytest -m platform                       105 passed, 400 deselected in  7.62s
-pytest -m ui                             14 passed in 31.11s（合入前；合流后收集 34 条，未重跑）
+pytest -m ui                             15 passed, 19 errors in 10.13s（收集 34 条；19 条 error 全是本机沙箱的 setup 失败，见下）
 
 cd traffic-replay; pytest                173 passed in 15.5s（批次 2，自带 pytest.ini）
 
@@ -546,7 +546,7 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
                                         CI 上由 `test` job 里那一步执行，并由门禁脚本钉住
 ```
 
-> **合流（qaplat / mes_web）与批次 2 之后的采集口径**：上面这一块里，各行的 `passed` 数与耗时是**合入前**的实测。
+> **合流（qaplat / mes_web）与批次 2 之后的采集口径**：上面这一块里，除 `-m ui` 那一行是本次重跑的结果外，各行的 `passed` 数与耗时是**合入前**的实测。
 > 合流只新增了打 `platform` 与 `ui` 标记的用例，除 `ui` 之外的各 marker 选取集没有变化，因此那些 `passed` 数仍然成立；
 > 变化的是全量总数（380 → 499 → 505，含平台层 99 → 105 条；批次 2 的 173 条自带 `pytest.ini`，不进根收集数）、
 > 各行的 `deselected`（`--collect-only` 可复现），以及 `-m ui`（收集数 14 → 34 条）。
@@ -557,11 +557,17 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > 批次 2 的 28 个文件**不进**这个分母：它自带 rootdir、`--cov=.` 只覆盖根仓库，
 > 且它的 `analyze/` `recorder/` `replay/` 都没有 `__init__.py`（靠 `conftest.py` 插 `sys.path` 导入）。
 
-> **`-m ui` 的 14 条这次真的在本机跑绿了**（`14 passed in 31.11s`）。
-> 上一版文档在这里写的是 `14 failed`，失败点是 setup 阶段的
-> `PermissionError: [WinError 5]`（沙箱禁止 asyncio 建进程管道）——
-> 换了运行环境后该限制不再生效，**用例与代码一字未改**。
-> 把这一行原样保留成"失败"反而不如实，所以按本次实测改掉了。
+> **`-m ui` 那一行是本次真的重跑过的，不再留"未重跑"**：命令是
+> `pytest -m ui -o addopts=`，结果是 `15 passed, 471 deselected, 19 errors in 10.13s`，退出码 1。
+> 19 条 error **全部**是同一根因：setup 阶段
+> `PermissionError: [WinError 5] 拒绝访问。`，栈底是 `asyncio/windows_utils.py` 里的
+> `_winapi.CreateNamedPipe(...)` —— 本机沙箱禁止 asyncio 建命名管道。19 条无例外
+> （`test_inventory.py` 8 条 / `test_login.py` 6 条 / `test_mes_mixed_flow.py` 5 条），
+> 所以它是**环境限制，不是用例缺陷、也不是被测代码的缺陷**——换一个不限制命名管道的
+> 运行环境这条限制就不存在。收集数 34 条（`pytest -m ui --collect-only -q -o addopts=`
+> → `34/505 tests collected`），所以"34 条里 15 条过、19 条卡在 setup"是环境截断出来的分布，
+> **不是通过率**，别把它读成"UI 用例有一半是坏的"。这些用例打的是公共 demo 站
+> `https://www.saucedemo.com`（配在 `data/config.yaml`），全程真实浏览器交互。
 >
 > **覆盖率门禁挂在 `-m api` 上，而它现在有 61.41%，不是"全量"的 83%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
