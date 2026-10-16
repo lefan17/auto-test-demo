@@ -626,6 +626,38 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
 
 ---
 
+### 修复 —— 采集通道坏掉时不再静默返回空列表（本轮）
+
+`qaplat/registry.py` 的 `collect_cases()` 一直有一条会被误读的失败路径：它用
+`subprocess.run(..., check=False)` 起收集子进程，却**从不看 `proc.returncode`**，最后一行是
+`node_ids = sorted(markers) or _node_ids_from_stdout(proc.stdout or "")`。于是「dump 没写成」
+且「stdout 抠不出 nodeid」时，函数返回 `[]`——在覆盖矩阵上和「这份 spec 真的没有被任何用例
+覆盖」长得一模一样。这正是本模块开头那条诚实性红线要防的错误：一个看起来正常、实际
+没人测的数字。
+
+- **判据（最小、可证伪）**：`node_ids` 为空**且** `returncode != 5` 时抛
+  `CaseCollectionError`。`exit 5` 是 pytest 对「一个用例都没收集到」的专用退出码，此时
+  返回 `[]` 是合法的，因此单独放行。
+- **异常信息带四样现场**：返回码、目标参数、两条来源各自的形态（dump 读到没有 /
+  stdout 抠出几条）、以及 stdout 与 stderr 的尾部各 12 行。只写「收集失败」等于把排查
+  工作原样退回给读日志的人。
+- **不做的事，以及为什么**：
+  - 不无条件抛。`exit 5` 是真实且合法的「零收集」，无条件 raise 会把正常路径一起打断。
+  - 不改成一律先解析 stdout。`--collect-only -q -q` 的 stdout 里只有 nodeid，markers 与
+    源文件路径只能从 dump 拿；先解析 stdout 会让调用方拿到没有 marker 的用例。
+  - 不重试。同一份输入重跑拿到同样结果的概率极高，重试只会把错误推迟并掩盖现场。
+- **可证伪实验**：`collect_cases(["-p", "no_such_plugin_xyz"])`（子进程因插件导入失败以 1
+  退出、dump 不会被写出）改前返回 `[]`，改后抛 `CaseCollectionError`，消息里带
+  `returncode: 1` 与 `ImportError: Error importing plugin "no_such_plugin_xyz"`。
+  正常路径未变：`testcases/platform/` 既有用例全绿，`qaplat.cli registry build` /
+  `registry gaps` / `gate --layer smoke` 各真跑一次均 exit 0。
+- **新增用例两条**：`test_collect_cases_raises_when_child_fails_and_yields_no_nodeids`，
+  以及带反例对照组的
+  `test_collect_cases_returns_empty_only_for_the_zero_collection_exit_code`
+  （把实现改成「一律 raise」时它会红）。
+
+---
+
 ## 2026-10-13
 
 ### 新增
@@ -696,3 +728,14 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
   这条环境依赖**没有被任何守卫挡住**——换一台机器跑红了，先确认浏览器是否就位，
   再怀疑用例。（早期本文件把同一批 error 归因成「受限沙箱禁止 asyncio 建命名管道」，
   那个归因不成立：报错原文是 `Executable doesn't exist at …chromium_headless_shell-1243`。）
+- **`test_collect_cases_features_a_second_file` 有约 1/16 概率的偶发失败，真因未定**：
+  现象是 `pytest -m "not ui" -n 4 --dist loadfile --cov=. --cov-report=term` 下，该用例的
+  `assert len(rewrite) == 1` 变成 `assert 0 == 1`（出现在 `[gw3]`）。累计 50+ 轮里命中 2 次，
+  两次都出现在带 `--cov-report=term` 的形态下；单独重跑该用例 30 次 0 失败，因此**没有**
+  用「加大轮次撞它」的办法取证——那只会得到一条不可复现的记录。
+  **已排除的假设**（均为实测排除）：xdist 注入的环境变量、`pytest-of-lefan` 临时目录、
+  路径里的连字符目录（`接口自动化_3`）、`TMP` 目录不存在。
+  **没有定出真因**：命中时现象与「`collect_cases` 拿到空结果」一致，但同一次运行里的
+  其它收集都正常；本轮给 `collect_cases` 加的守卫（见上一节）会在子进程非 0 退出且零结果时
+  抛异常并打印现场，**若它再次命中且报出 `returncode`，就能把假设范围缩到「子进程退出码」
+  与「stdout 形态」两者之一**——这是给下一次复现留的探针，**不是已经修好了这个偶发失败**。

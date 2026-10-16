@@ -185,6 +185,20 @@ def coverage_ratio(coverage: Sequence[OperationCoverage]) -> float:
     return sum(1 for c in coverage if c.covered_by) / len(coverage)
 
 
+#: pytest 的退出码 5 = 「一个用例都没收集到」；这是 collect_cases 唯一允许返回空列表的情形。
+_EXIT_NO_TESTS_COLLECTED = 5
+
+
+class CaseCollectionError(RuntimeError):
+    """采集子进程的结论既拿不到、退出码又说不出个所以然。
+
+    这是**观测通道坏了**，不是「仓库里没有用例」：``--collect-only`` 只有在一条都没收集到时
+    才以 5 退出，其它退出码下拿到零结果，只可能是 dump 没写成、stdout 形态变了、或子进程
+    自己失败了。此时返回空列表会把它伪装成「这份 spec 没有任何用例覆盖」——那正是
+    ``registry.py`` 开头那条诚实性红线上最危险的一种错误，所以这里选择直接吵。
+    """
+
+
 def collect_cases(pytest_args: Sequence[str] = ()) -> list[CaseInfo]:
     """收集用例并附上 markers / 路径归属。
 
@@ -195,6 +209,11 @@ def collect_cases(pytest_args: Sequence[str] = ()) -> list[CaseInfo]:
 
     收集阶段报错（例如缺 schemathesis 这类可选依赖）时 pytest 会中断并只返回部分结果；
     这里把已拿到的部分原样返回，缺哪些由调用方通过覆盖率数字与 ``registry gaps`` 看到。
+
+    但**一条都拿不到**是另一回事：那说明采集通道本身坏了（dump 没写成、stdout 形态变了、
+    子进程起不来），不是「仓库里没有用例」。此时除 ``exit 5``（pytest 对「零收集」的专用
+    退出码）外一律抛 :class:`CaseCollectionError`，把返回码与两路输出的尾部带出来，
+    而不是返回一个看着像「没覆盖」的空列表。
     """
     # 用 with 而不是裸 mkdtemp：收集一次就漏一个目录，跑几十轮后临时区里
     # 堆满几百个只有 collect.json 的 qaplat-collect-*，排查别的问题时全是噪声。
@@ -230,18 +249,26 @@ def collect_cases(pytest_args: Sequence[str] = ()) -> list[CaseInfo]:
         )
 
         payload: dict[str, object] = {}
+        dump_note = "不存在"
         if dump_path.exists():
             try:
                 loaded = json.loads(dump_path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     payload = loaded
-            except (OSError, json.JSONDecodeError):
+                    dump_note = "已读入"
+                else:
+                    dump_note = f"存在但顶层不是对象（{type(loaded).__name__}）"
+            except (OSError, json.JSONDecodeError) as exc:
                 payload = {}
+                dump_note = f"存在但读不出来（{type(exc).__name__}: {exc}）"
 
     markers = _as_str_map(payload.get("markers"))
     files = _as_str_map(payload.get("files"))
     covers = _as_str_map(payload.get("covers"))
     node_ids = sorted(markers) or _node_ids_from_stdout(proc.stdout or "")
+
+    if not node_ids and proc.returncode != _EXIT_NO_TESTS_COLLECTED:
+        raise CaseCollectionError(_collection_failure_report(proc, pytest_args, dump_note, payload))
 
     cases: list[CaseInfo] = []
     for node_id in node_ids:
@@ -287,6 +314,42 @@ def _node_ids_from_stdout(text: str) -> list[str]:
         if "::" in stripped and not stripped.startswith(("=", "-", "!", "E ")):
             ids.append(stripped)
     return ids
+
+
+def _tail(text: str, lines: int = 12, width: int = 200) -> str:
+    """取输出的最后几行，每行截到 ``width`` 个字符。
+
+    整段 stdout/stderr 可能有上千行（收集失败时 pytest 会把 traceback 全吐出来），
+    异常信息里只需要「末尾发生了什么」，所以从这里开始截。
+    """
+    kept = [line for line in (text or "").splitlines() if line.strip()][-lines:]
+    if not kept:
+        return "（空）"
+    return "\n".join(line[:width] for line in kept)
+
+
+def _collection_failure_report(
+    proc: subprocess.CompletedProcess[str],
+    pytest_args: Sequence[str],
+    dump_note: str,
+    payload: dict[str, object],
+) -> str:
+    """把「一条都没拿到」的现场拼成一段可直接读的异常信息。
+
+    四样东西缺一不可：退出码（子进程到底怎么了）、目标参数（复现这一条要敲什么）、
+    两条来源各自的形态（dump 有没有读到、stdout 抠出几行 nodeid）、以及两个输出的尾部
+    （真正的报错原文在这里）。只写「收集失败」等于把排查工作原样退回给读日志的人。
+    """
+    return (
+        "collect_cases 一条用例都没拿到，但子进程不是以 5（零收集）退出，"
+        "因此这更像采集通道坏了而不是仓库里没有用例。\n"
+        f"  returncode: {proc.returncode}\n"
+        f"  目标参数: {[str(item) for item in pytest_args]!r}\n"
+        f"  dump: {dump_note}；payload 顶层键: {sorted(payload)!r}\n"
+        f"  stdout 抠出 nodeid: {len(_node_ids_from_stdout(proc.stdout or ''))} 条\n"
+        f"  stdout 尾部:\n{_tail(proc.stdout or '')}\n"
+        f"  stderr 尾部:\n{_tail(proc.stderr or '')}"
+    )
 
 
 def load_coverage_matrix(json_path: str | Path = COVERAGE_JSON) -> list[OperationCoverage]:

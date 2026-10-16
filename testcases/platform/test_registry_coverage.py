@@ -305,3 +305,32 @@ def test_collect_cases_features_a_second_file(tmp_path) -> None:
     case = rewrite[0]
     assert case.covers == ("healthz_api_v1_healthz_get",)
     assert case.referenced_paths == ("/api/v1/materials",)
+
+
+def test_collect_cases_raises_when_child_fails_and_yields_no_nodeids() -> None:
+    """子进程非 0 退出、两条来源都空时必须吵，而不是返回一个空列表。
+
+    ``-p no_such_plugin_xyz`` 让子进程以 1 退出（插件导入失败），stdout 里一条 nodeid 都没有、
+    dump 也不会被写出。改前这里静默返回 ``[]``，在报表上就是「这份 spec 没有任何用例覆盖」——
+    一个看起来正常、实际没人测的数字。异常里必须带返回码与 stderr 尾部，否则等于没诊断。
+    """
+    with pytest.raises(registry.CaseCollectionError) as excinfo:
+        registry.collect_cases(["-p", "no_such_plugin_xyz"])
+
+    message = str(excinfo.value)
+    assert "returncode: 1" in message
+    assert "no_such_plugin_xyz" in message
+    assert "ImportError" in message, "异常要带子进程 stderr 的尾部，否则排查时等于没拿到现场"
+
+
+def test_collect_cases_returns_empty_only_for_the_zero_collection_exit_code(tmp_path) -> None:
+    """零收集（pytest 退出码 5）仍然返回空列表；同一 helper 下的非空目标必须真有结果。
+
+    后半条是对照组：把实现写成「一律 raise」能骗过前半条断言，但会在后半条红掉。
+    """
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    assert registry.collect_cases([str(empty_dir), "--collect-only"]) == []
+
+    cases = registry.collect_cases(["testcases/platform/test_gate_layers.py", "--collect-only"])
+    assert cases, "非空目标必须真收到用例——否则「一律 raise」也能让上面那条断言通过"
