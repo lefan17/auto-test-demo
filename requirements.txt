@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 # === 核心测试框架 ===
-pytest==9.1.1
+# pytest 卡在 8.x：schemathesis 3.39.16（见本文件末尾）声明 pytest<9,>=4.6.4，
+# 而 3.x 全系都没有放开到 9 的版本，4.x 起又移除了 experimental.OPEN_API_3_1
+# 开关（契约测试依赖它）。所以这里取满足全部下游约束的最高 8.x。
+pytest==8.4.2
 pytest-html==4.2.0
 allure-pytest==2.13.5
 pytest-xdist==3.8.0
