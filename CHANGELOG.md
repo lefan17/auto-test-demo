@@ -687,7 +687,12 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
 - **mypy 未做到全仓零错误**：`--strict` 下 342 个错误。
   当前配置通过中把已知技术债**逐模块登记**在 `pyproject.toml` 里，
   而不是消灭它们。这是一份有账可查的分阶段方案，不是"已经零错误"。
-- **`-m ui` 依赖运行环境的进程管道权限**：在受限沙箱里 14 条用例会在 setup 阶段
-  全失败（`PermissionError: [WinError 5]`，asyncio 建管道被禁），属环境限制、非用例缺陷；
-  放宽权限后同一批用例实测 `14 passed in 31.11s`。**这条环境依赖没有被任何守卫挡住**——
-  换一台机器跑红了，先确认是不是又落回受限环境，再怀疑用例。
+- **`-m ui` 依赖与 `requirements.txt` 同 rev 的 Playwright 浏览器**：34 条里有 19 条
+  要真的起浏览器（`test_inventory.py` 8 / `test_login.py` 6 / `test_mes_mixed_flow.py` 5），
+  另 15 条（`test_mes_web_app.py`）走 HTTP 层、不申请 `page`。缺浏览器时那 19 条会在 setup
+  阶段全 error，**属环境限制、非用例缺陷**；`python -m playwright install chromium` 会把
+  该 rev 装到位（`tools/install_chromium.py` 也按 `--dry-run` 输出的真值代劳）。
+  装好后的实测：`-m ui` → `34 passed, 471 deselected`，全量 → `494 passed, 11 xfailed`。
+  这条环境依赖**没有被任何守卫挡住**——换一台机器跑红了，先确认浏览器是否就位，
+  再怀疑用例。（早期本文件把同一批 error 归因成「受限沙箱禁止 asyncio 建命名管道」，
+  那个归因不成立：报错原文是 `Executable doesn't exist at …chromium_headless_shell-1243`。）
