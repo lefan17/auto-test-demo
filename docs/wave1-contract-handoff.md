@@ -6,6 +6,7 @@
 - 基线 commit：`691cb04 chore: mirror baseline from auto-test-demo@b8524c9`
 - 解释器：`C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`（Python 3.12.10）
 - 每次跑 pytest/ruff/mypy 前设：`$env:PYTHONPATH='C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs'`
+  （**2026-10 订正**：schemathesis 升到 4.31.1 后已装进 `.venv`，本行不再需要——见本文件 §5「三条必须知道的使用约束」的订正）
 
 ---
 
@@ -139,9 +140,14 @@ docs/openapi-login_app.json   2129 字节
 
 补充：schemathesis 3.39 **没有**内建的 max-examples 环境变量（`schemathesis/constants.py` 里不存在），所以规模旋钮是自己实现的。放大 6 倍 examples 只把耗时从 11.27s 拉到 44.89s（线性），没有超线性爆炸。
 
+（**2026-10 复核**：升到 4.31.1 后结论不变——`--max-examples` 仍只是 CLI 选项，没挂 envvar，所以自实现的 `CONTRACT_MAX_EXAMPLES` / `CONTRACT_FULL` 旋钮继续有效。）
+
 三条必须知道的使用约束：
 
-1. **OpenAPI 3.1 是实验特性**。FastAPI 0.115.6 默认导出 3.1.0，schemathesis 3.39 直接拒绝（`SchemaError: The provided schema uses Open API 3.1.0, which is currently not fully supported.`）。代码里在 import 期调 `schemathesis.experimental.OPEN_API_3_1.enable()`。**升级 schemathesis 前必须先确认这个开关还在。**
+1. ~~**OpenAPI 3.1 是实验特性**。FastAPI 0.115.6 默认导出 3.1.0，schemathesis 3.39 直接拒绝（`SchemaError: The provided schema uses Open API 3.1.0, which is currently not fully supported.`）。代码里在 import 期调 `schemathesis.experimental.OPEN_API_3_1.enable()`。**升级 schemathesis 前必须先确认这个开关还在。**~~
+   **⚠️ 2026-10 订正（schemathesis 3.39.16 → 4.31.1）**：上面这条已经失效。4.x **原生支持** OpenAPI 3.1，
+   `schemathesis.experimental` 整个模块被删除（4.31.1 wheel 里没有该目录），契约测试里原先那句 import 期的
+   `schemathesis.experimental.OPEN_API_3_1.enable()` 已随之删掉，**不再需要任何开关**。
 2. 认证走 `schemathesis.auths.AuthProvider`（`BearerAuth` 类：`get()` 返回令牌、`set()` 写进 `case.headers`），用 `schema.auth.apply(BearerAuth)` 注册。不用「手工塞 header」是因为补全视图声明了 `bearerAuth` 后 schemathesis 会自己生成随机 `Authorization`，塞进去的会被覆盖。
 3. `schema.get_all_operations()` 返回的是 `Ok`/`Failure` 包装对象，必须 `.ok()` 才拿到 `APIOperation`。
 

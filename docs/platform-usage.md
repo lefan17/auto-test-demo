@@ -14,25 +14,29 @@
 
 ---
 
-## 1. 前置：解释器与 PYTHONPATH
+## 1. 前置：解释器
 
-本仓库的 400 条基线用例里，`testcases/contract/test_schemathesis_properties.py` 依赖
-**schemathesis**，而 schemathesis 并不在 venv 的 site-packages 里，它放在仓库外的
-`work/pylibs` 目录（纯目录，未安装）。因此：
-
-- 不带 PYTHONPATH 时收集只有 **317 条 + 1 个收集期 ERROR**；
-- 带上 PYTHONPATH 才是 **505 条**（其中平台层自测 105 条）。
+契约用例 `testcases/contract/test_schemathesis_properties.py` 依赖 **schemathesis**，它现在
+是 `requirements.txt` 里的普通一行，装在仓库自己的 `.venv` 里，**不需要设 `PYTHONPATH`**：
 
 ```powershell
 chcp 65001 > $null
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
-$env:PYTHONPATH = 'C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs'
-cd C:\Users\lefan\DSH_project\接口自动化_3\work\auto-test-demo
-$py = 'C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe'
+cd C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework
+$py = '.\.venv\Scripts\python.exe'
 ```
 
+依赖先装好（`pip install -r requirements.txt`，要复现 CI 的完整树就 `-r requirements.lock`），
+之后全仓收集即为完整数量（契约 224 + 其余各层，合计 505 条）。
+
+> **2026-10 订正**：本节原写「schemathesis 并不在 venv 的 site-packages 里，它放在仓库外的
+> `work/pylibs` 目录」，并给出「不带 PYTHONPATH 收集 317 条 + 1 个收集期 ERROR、带上才是 505 条」。
+> 该前提随 schemathesis 3.39.16 → 4.31.1 迁移消失（4.x 的 wheel 正常安装进 site-packages）。
+> 实测：`python -m pip show schemathesis` → `Location: …\.venv\Lib\site-packages`；
+> 不带任何 PYTHONPATH 的 `python -m pytest --collect-only -q` = `505 tests collected`。
+
 `qaplat` 包本身**不**设置也不硬编码 PYTHONPATH——那是环境的责任，藏在包里会让人以为
-`pip install -r requirements.txt` 就够。CI 里用真实 `pip install` 装 schemathesis，所以 CI 不需要这步。
+`pip install -r requirements.txt` 就够。CI 里用真实 `pip install` 装依赖，所以 CI 也不需要这步。
 
 ---
 

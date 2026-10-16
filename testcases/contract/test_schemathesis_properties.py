@@ -14,8 +14,9 @@
    `POST /work-orders/{order_no}/report` 这类 operation 的负向策略必然 Unsatisfiable。
    给了显式 `path_parameters` 之后 17/17 个带路径参数的 operation 都能生成（实测数字见 handoff）。
    这是**用法**问题，不是服务缺陷。
-4. **限规模用 hypothesis settings，不用 schemathesis 的环境变量**。3.39 没有内建的
-   max-examples 环境变量，所以规模由 `spec_contract.max_examples()` 读环境变量后传进 settings。
+4. **限规模用 hypothesis settings，不用 schemathesis 的环境变量**。4.31 也没有内建的
+   max-examples 环境变量（`--max-examples` 只是 CLI 选项，未挂 envvar），所以规模由
+   `spec_contract.max_examples()` 读环境变量后传进 settings。
    默认 8，`CONTRACT_MAX_EXAMPLES=50` 或 `CONTRACT_FULL=1` 放大。
 """
 
@@ -27,7 +28,7 @@ import pytest
 import requests
 import schemathesis
 from hypothesis import HealthCheck, given, settings
-from schemathesis import DataGenerationMethod
+from schemathesis import GenerationMode
 from schemathesis.auths import AuthProvider
 from schemathesis.checks import (
     content_type_conformance,
@@ -36,6 +37,7 @@ from schemathesis.checks import (
     response_schema_conformance,
     status_code_conformance,
 )
+from schemathesis.config import SchemathesisConfig
 from spec_contract import (
     NOT_FOUND_FROM_BODY_REQUEST,
     PERMISSIONS,
@@ -51,10 +53,8 @@ from spec_contract import (
 
 pytestmark = pytest.mark.contract
 
-# OpenAPI 3.1 在 schemathesis 3.39 里是实验特性，不开会直接 SchemaError。
-# 在 import 期就打开：本文件所有用例都依赖它，放进 fixture 只会把报错变成
-# "某个 operation 拿不到"，而不是"3.1 没开"。
-schemathesis.experimental.OPEN_API_3_1.enable()
+# OpenAPI 3.1 在 4.x 里是原生支持，3.39 时代的 `schemathesis.experimental.OPEN_API_3_1.enable()`
+# 随整个 experimental 模块一起被删除（4.31.1 wheel 里无该目录），故此处不再需要任何开关。
 
 # 全部 operation 的 id，模块级算一次（每个 spec 都一样，不必每个用例重读文件）。
 ALL_OPERATIONS: list[str] = [f"{method} {path}" for method, path, _ in iter_operations(load_spec(PRISTINE_SPEC_PATH))]
@@ -117,7 +117,11 @@ class BearerAuth(AuthProvider):
 
 
 def build_schema(test_view: dict[str, Any], base_url: str, token: str) -> Any:
-    schema = schemathesis.openapi.from_dict(test_view, base_url=base_url)
+    # 4.x 的 `openapi.from_dict()` 只收 `(schema, *, config=None)`，不再有 `base_url=` 关键字
+    # （3.39 有）。目标地址改为在配置里给：`config.base_url` 同时喂给 `get_base_url()` 与
+    # `base_path` 的推导，语义与 3.39 的 `base_url=` 一致。
+    config = SchemathesisConfig.from_dict({"base-url": base_url})
+    schema = schemathesis.openapi.from_dict(test_view, config=config)
     BearerAuth.token = token
     schema.auth.apply(BearerAuth)
     return schema
@@ -133,12 +137,12 @@ def operations_of(schema: Any) -> list[Any]:
         else:
             failures.append(item.err())
     assert not failures, f"有 operation 无法解析：{failures}"
-    return sorted(resolved, key=lambda op: op.verbose_name)
+    return sorted(resolved, key=lambda op: op.label)
 
 
 def pick(schema: Any, op_id: str) -> Any:
     for operation in operations_of(schema):
-        if operation.verbose_name == op_id:
+        if operation.label == op_id:
             return operation
     raise AssertionError(f"{op_id} 不在 schema 的 operation 列表里")
 
@@ -163,7 +167,7 @@ def test_positive_cases_conform_to_spec(
     operation = pick(schema, op_id)
     strategy = schema.get_case_strategy(
         operation,
-        data_generation_method=DataGenerationMethod.positive,
+        generation_mode=GenerationMode.POSITIVE,
         path_parameters=explicit_path_parameters(operation),
     )
     observed: list[int] = []
@@ -172,7 +176,7 @@ def test_positive_cases_conform_to_spec(
     @given(case=strategy)
     def run(case: Any) -> None:
         case.headers = dict(case.headers or {}, Authorization=f"Bearer {token}")
-        response = case.call(base_url=schema.base_url)
+        response = case.call(base_url=schema.get_base_url())
         observed.append(response.status_code)
         case.validate_response(response, checks=CHECK_CHECKS)
 
@@ -199,7 +203,7 @@ def test_negative_cases_are_rejected(
     operation = pick(schema, op_id)
     strategy = schema.get_case_strategy(
         operation,
-        data_generation_method=DataGenerationMethod.negative,
+        generation_mode=GenerationMode.NEGATIVE,
         path_parameters=explicit_path_parameters(operation),
     )
     seen: list[int] = []
@@ -208,7 +212,7 @@ def test_negative_cases_are_rejected(
     @given(case=strategy)
     def run(case: Any) -> None:
         case.headers = dict(case.headers or {}, Authorization=f"Bearer {token}")
-        response = case.call(base_url=schema.base_url)
+        response = case.call(base_url=schema.get_base_url())
         if response.status_code >= 500:
             raise AssertionError(f"负向数据打出了 5xx：{response.status_code} {response.text[:200]}")
         if response.status_code >= 400:

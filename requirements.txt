@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
 # === 核心测试框架 ===
-# pytest 卡在 8.x：schemathesis 3.39.16（见本文件末尾）声明 pytest<9,>=4.6.4，
-# 而 3.x 全系都没有放开到 9 的版本，4.x 起又移除了 experimental.OPEN_API_3_1
-# 开关（契约测试依赖它）。所以这里取满足全部下游约束的最高 8.x。
-pytest==8.4.2
+# pytest 取 9.0.3：PYSEC-2026-1845（CVE-2025-71176）的修复版本正是 9.0.3
+# （advisory 原文 "pytest through 9.0.2 ... /tmp/pytest-of-{user}"），8.x 全系都带这个洞。
+# 8.x 曾经是被 schemathesis 3.39.16 的 `pytest<9,>=4.6.4` 卡住的；4.31.1 声明
+# `pytest<10,>=8.4`，这条约束随之解除。
+# 不取更高（9.1.x）是因为 9.1.0 起 pytest.approx() 对 datetime/timedelta 强制要求显式容差
+# （_pytest/python_api.py 抛 "requires an explicit tolerance"），会让 testcases/platform/
+# test_metrics_store.py:140 的既有断言 TypeError 失败；该文件不在本次迁移边界内。
+# 9.0.3 既能堵上这个洞，也不动既有用例。
+pytest==9.0.3
 pytest-html==4.2.0
 allure-pytest==2.13.5
 pytest-xdist==3.8.0
@@ -47,14 +52,14 @@ pydantic==2.14.1
 # 必须装在同一个环境里——只装 pytest 的人跑 pytest -m contract 会 ImportError，
 # 和上面 Mock 后端段是同一个理由。
 # 只 pin 直接依赖 schemathesis：它自己声明的依赖（hypothesis、httpx、werkzeug、
-# yarl、click 等）交给 pip 解析。这里不照抄一份传递依赖清单，是因为
+# yarl、click、jsonschema-rs 等）交给 pip 解析。这里不照抄一份传递依赖清单，是因为
 # 传递依赖一旦由本文件接管，就会和 schemathesis 自身的版本约束打架，
 # 而 requirements.lock（pip-compile 产物）本来就会把解析结果全量钉死。
-# 实测（python 3.12.10）解析结果：hypothesis==6.169.1、hypothesis-jsonschema==0.23.1、
-# hypothesis-graphql==0.13.2、httpx==0.28.1、werkzeug==3.1.9、yarl==1.25.1、
-# starlette-testclient==0.4.1、pytest-subtests==0.14.2、harfile==0.5.0、
-# backoff==2.2.1、pyrate-limiter==3.9.0、junit-xml==1.9、tomli==2.5.0、tomli-w==1.2.0。
-# 注意 schemathesis 3.39 对 OpenAPI 3.1 仍是实验特性（FastAPI 0.115 默认导出 3.1.0），
-# 代码里显式调用了 schemathesis.experimental.OPEN_API_3_1.enable()，
-# 升级 schemathesis 前必须先确认这个开关还在。
-schemathesis==3.39.16
+# 实测（python 3.12.10）解析结果：hypothesis==6.169.1、hypothesis-graphql==0.13.2、
+# jsonschema-rs==0.58.6、pyrate-limiter==4.5.0、rich==15.0.0、anyio==4.15.1、
+# werkzeug==3.1.9、harfile==0.5.0。4.x 起 schemathesis 不再声明 starlette，
+# 所以 starlette 只由 fastapi 段约束（详见本文件上方 fastapi 的注释）。
+# 4.x 起 OpenAPI 3.1 是原生支持，`schemathesis.experimental` 整个模块已被删除
+# （4.31.1 wheel 里没有该目录），契约测试里原先那句 import 期的
+# `schemathesis.experimental.OPEN_API_3_1.enable()` 已随之删掉。
+schemathesis==4.31.1

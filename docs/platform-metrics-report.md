@@ -13,7 +13,7 @@
 | --- | --- |
 | HEAD | `a49b097` |
 | 解释器 | `C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`（Python 3.12.10） |
-| `PYTHONPATH` | `C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs`（**必须**，见第 1 节） |
+| `PYTHONPATH` | ~~`C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs`~~（**2026-10 起不需要**，见第 1 节订正） |
 | 平台层自测 | 99 条，全绿 |
 | 用例总数 | 462 = 363 基线 + 99 平台层新增 |
 | 接口覆盖率 | 14 / 29 = **48.3%** |
@@ -40,6 +40,12 @@ $ python -m pytest -m "not ui" -q --collect-only
 既不在 venv、也没有任何 `.pth` 指过去，它躺在仓库外的 `work/pylibs` 里（纯目录，未安装）。
 CI 用真实 `pip install -r requirements.txt` 装它，所以 **CI 上不存在这个问题**；这是**本机**特有的
 前置条件，写进 `docs/platform-usage.md` 第 1 节，且**没有硬编码进 `qaplat` 包**。
+
+> **⚠️ 2026-10 订正（schemathesis 3.39.16 → 4.31.1）**：上面这段的前置条件已消失。
+> schemathesis 4.31.1 正常安装进 `.venv\Lib\site-packages`，不再需要 `PYTHONPATH`，
+> `ModuleNotFoundError: No module named 'schemathesis'` 这个收集期 ERROR 不复存在。
+> 本节下面那些 `175 tests collected, 1 error` / `448/462` 的数字**按原文保留**（本文是时点快照，
+> 见文件抬头），仅此条前置说明作废。
 
 ### 1.1 收集数对账（462 = 363 + 99）
 
@@ -70,8 +76,10 @@ $ python -m pytest -m platform -q
 [exit code: 0]
 ```
 
-唯一 warning 来自 `work/pylibs/schemathesis/generation/coverage.py:305`
+唯一 warning 来自 ~~`work/pylibs/schemathesis/generation/coverage.py:305`~~
 （`jsonschema.exceptions.RefResolutionError is deprecated`），是第三方库自身的告警，与本平台无关。
+（**2026-10 订正**：升级到 4.31.1 后该告警路径不复存在——schemathesis 已从 `work/pylibs`
+装进 `.venv`，且 4.x 不再走 `generation/coverage.py` 那条弃用路径。）
 
 四条被测链路（对应四个测试文件）：
 
