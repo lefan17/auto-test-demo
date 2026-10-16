@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
 # === 核心测试框架 ===
-pytest==8.3.3
-pytest-html==4.1.1
+# pytest 卡在 8.x：schemathesis 3.39.16（见本文件末尾）声明 pytest<9,>=4.6.4，
+# 而 3.x 全系都没有放开到 9 的版本，4.x 起又移除了 experimental.OPEN_API_3_1
+# 开关（契约测试依赖它）。所以这里取满足全部下游约束的最高 8.x。
+pytest==8.4.2
+pytest-html==4.2.0
 allure-pytest==2.13.5
-pytest-xdist==3.6.1
-pytest-cov==6.0.0
+pytest-xdist==3.8.0
+# pytest-cov 卡在 6.x：7.0.0 起移除了 pytest_cov/embed.py 与 pytest_cov.pth，
+# 子进程覆盖率埋点（COV_CORE_* 通道）随之消失，
+# testcases/mes/test_coverage_collection.py 会红。6.3.0 是仍带这两个文件的最高版本。
+pytest-cov==6.3.0
 
 # 重跑治理（flaky 用例与隔离区，见 docs/wave2-flaky-handoff.md）。
 # 只 pin 这一个直接依赖：它的元数据只声明 pytest!=8.2.2,>=8.2 与 packaging>=17.1
@@ -24,7 +30,7 @@ jsonschema==4.26.0
 
 # === UI 测试 ===
 playwright==1.63.0
-pytest-playwright==0.5.2
+pytest-playwright==0.10.0
 
 # === Mock 后端（testcases/mes/ 的业务全链路用例需要，见 mock_server/） ===
 # 放在同一个文件里，是为了让"一条 pip install 就能跑全部用例"成立。
