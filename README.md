@@ -417,7 +417,8 @@ pytest --html=report.html --self-contained-html
   同一毫秒惊群），且所有等待都被 `API_MAX_RETRY_WAIT`（默认 30 秒）截断——
   否则一个 `Retry-After: 3600` 就能把整个用例会话挂死。
   这条路径由 `testcases/api/test_retry_after.py` 起本地 `http.server` 真实返回
-  429 + `Retry-After` 验证（请求真的过 socket），`tools/check_retry.py` 另有 10 条离线断言。
+  429 + `Retry-After` 验证（请求真的过 socket），`tools/check_retry.py` 另有 23 条离线断言
+  （桩对象、不发真请求，CI 上由 `test` job 里那一步执行）。
 - **代理自动回退**：传输失败后的重试会临时绕过系统代理再试一次
   （`proxies={"http": None, "https": None}`）。本机开着 Clash/v2ray 时，`requests`
   会自动走它，而这类代理对某些域名会直接掐断 TLS，报
@@ -533,7 +534,8 @@ python scripts/export_openapi.py --check 两份 spec [一致]（退出码 0）
 python -m mypy                          Success: no issues found in 109 source files
 python scripts/check_gate_policy.py     策略文档、test.yml、pytest.ini 三者一致（退出码 0）
 python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 + 波 2 新增 10 条 + 第 23 条）；
-                                        第 23 条钉的是「代理回退判据」那个曾经的缺陷
+                                        第 23 条钉的是「代理回退判据」那个曾经的缺陷；
+                                        CI 上由 `test` job 里那一步执行，并由门禁脚本钉住
 ```
 
 > **合流（qaplat / mes_web）与批次 2 之后的采集口径**：上面这一块里，各行的 `passed` 数与耗时是**合入前**的实测。
@@ -793,14 +795,14 @@ ADMIN 角色、读写混合（read:write = 8:1）、`wait_time = 0`（用户数�
 
 **每个 job 的阻塞性、每个测试层的触发时机与预算时长，以 [`docs/质量门禁策略.md`](docs/质量门禁策略.md) 为准**——
 那份文档不是说明文，是门禁的一部分：`python scripts/check_gate_policy.py` 会拿本文档里的 job 表、
-`continue-on-error` 放行清单、marker 归属表，与 `.github/workflows/test.yml` 和 `pytest.ini` 逐条对照，
+`continue-on-error` 放行清单、marker 归属表、自检脚本表，与 `.github/workflows/test.yml` 和 `pytest.ini` 逐条对照，
 分叉就红（这一步在 `pre-commit` job 里跑）。下表是速览：
 
 | job | 做什么 | 失败会拦流水线吗 |
 |---|---|---|
 | `lint` | `ruff check .` + `ruff format --check .`（规则全部来自仓库根的 `ruff.toml`） | ✅ 拦 |
 | `typecheck` | `python -m mypy`（配置来自 `pyproject.toml`） | ✅ 拦 |
-| `test` | 先做契约漂移门禁 → 契约属性测试 → 再跑六组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约 → 平台层自测 → 流量回放子项目）→ 汇总 flaky 治理账本 + 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
+| `test` | 先做契约漂移门禁 → 契约属性测试 → 再跑六组用例（接口含覆盖率门禁 → UI → 业务全链路 → 登录契约 → 平台层自测 → 流量回放子项目）→ 重试与代理回退离线自检 → 汇总 flaky 治理账本 + 生成 Allure 报告 | ✅ 拦（**UI 那一步除外**） |
 | `security` | `pip-audit --requirement requirements.lock --strict` | ❌ 不拦（见下） |
 | `pre-commit` | `pre-commit run --all-files`，验证 hook 配置本身没腐烂；再跑 `scripts/check_gate_policy.py` 校验门禁策略没腐烂 | ✅ 拦 |
 | `commit-convention` | 拿最近 30 条真实提交跑 `scripts/check_commit_msg.py` | ✅ 拦（逐条警告，不聚合） |

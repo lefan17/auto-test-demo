@@ -22,6 +22,14 @@
      都必须在文档的放行清单里逐条登记（双向，多登记也算错）。job 级那条的步骤名写作
      `<job 级>`，因为它并不属于任何一步。
   5. 文档的 marker 表覆盖 pytest.ini 声明的全部 marker（双向，写多一个也是错）。
+  6. 文档「自检脚本」表里声明的每个脚本，它所属的 job 必须真在 workflow 里，
+     且那个 job 里必须真有一条 `run:` 在调用这个脚本。这一条是**单向**的：
+     只保证「文档说 CI 会跑它」这句话是真的，不去数 workflow 里每一个脚本调用——
+     因为 `export_openapi.py` / `case_index.py` / `flaky_report.py` 这些属于「怎么跑测试」的
+     机制细节，不是「哪条策略被机器钉住」的声明，强迫它们全部登记只会让表格变成负担。
+     为什么需要它：`tools/check_retry.py` 的 23 条断言被 README 当成质量证据引用，
+     但在加这一条之前，workflow 里一次都没执行过它——「写在文档里的规矩、CI 从不执行」
+     和「没跑成当通过」是同一类假绿，区别只是它骗的是读文档的人而不是流水线。
 
 用法::
 
@@ -44,11 +52,14 @@ PYTEST_INI = REPO_ROOT / "pytest.ini"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "test.yml"
 POLICY_DOC = REPO_ROOT / "docs" / "质量门禁策略.md"
 
-# 策略文档里三段机器可读表格的 HTML 注释锚点。用注释而不是标题文字做锚点：
+# 策略文档里四段机器可读表格的 HTML 注释锚点。用注释而不是标题文字做锚点：
 # 标题会被人顺手改掉，改完之后脚本静默找不到段落就退化成"什么都没检查"。
 JOB_SECTION = "gate-policy:jobs"
 RELAXED_SECTION = "gate-policy:continue-on-error"
 MARKER_SECTION = "gate-policy:markers"
+SELF_CHECK_SECTION = "gate-policy:self-checks"
+# 各段表格首列的表头名（`section_rows` 跳过它们，不当数据行）。
+HEADER_CELLS = ("job", "marker", "脚本")
 
 BLOCKING = "阻塞"
 PARTIAL = "部分放行"
@@ -67,6 +78,11 @@ STEP_LEVEL_COE_RE = re.compile(r" {8}continue-on-error:\s*(\S+)\s*$")
 # YAML 的行尾注释（`#` 前必须有空白），例如 `continue-on-error: true  # 试点`。
 # 不剥掉它，上面两条正则会因为 `$` 对不上而失配——真豁免又会被读成不存在，回到假绿。
 TRAILING_COMMENT_RE = re.compile(r"\s+#.*$")
+# step 里的 run：单行命令（8 空格 `run: 命令`）与块命令（`run: |` 之后更深缩进的内容）。
+RUN_INLINE_RE = re.compile(r" {8}run:\s*(\S.*)$")
+RUN_BLOCK_RE = re.compile(r" {8}run:\s*[|>][-+]?\s*$")
+# run 命令里的脚本路径 token（`python tools/check_retry.py`、`python -m pytest scripts/x.py -q`）。
+SCRIPT_TOKEN_RE = re.compile(r"[A-Za-z0-9_./-]+\.py")
 
 
 def strip_trailing_comment(raw: str) -> str:
@@ -95,6 +111,7 @@ class WorkflowJob:
     timeout: int | None
     relaxed_steps: tuple[tuple[str, str, int], ...]  # (步骤名, continue-on-error 值, 行号)
     relaxed_job: tuple[str, int] | None  # job 级 continue-on-error：(值, 行号)；没有则 None
+    run_commands: tuple[str, ...] = ()  # 这个 job 里每一条 run 的命令文本（规则 6 用）
 
     @property
     def relaxed_entries(self) -> tuple[tuple[str, str, int], ...]:
@@ -132,6 +149,13 @@ class DocRelaxed:
     job: str
     step: str
     value: str
+    line: int
+
+
+@dataclass(frozen=True)
+class DocSelfCheck:
+    script: str
+    job: str
     line: int
 
 
@@ -185,13 +209,16 @@ def parse_pytest_markers(text: str) -> dict[str, int]:
 
 
 def parse_workflow(text: str) -> dict[str, WorkflowJob]:
-    """按缩进解析 job、job 级 timeout、job 级与 step 级的 continue-on-error。
+    """按缩进解析 job、job 级 timeout、job 级与 step 级的 continue-on-error、每个 job 的 run 命令。
 
     刻意不 import yaml：这份 workflow 只有 job/step 两层结构，而 YAML 1.1 会把顶格的
     `on:` 解析成布尔 True、还要为此写补偿代码；缩进扫描反而更直白，也让本脚本零依赖。
 
     豁免有两种缩进，必须都认：job 级（4 空格）与 step 级（8 空格）。只认后者会让 job 级
     豁免隐形，于是文档写「不阻塞」被误判、写「阻塞」反而假绿。
+
+    run 命令同样要收全：单行 `run: 命令` 直接取；`run: |` 块则把后面缩进更深的行一并接上，
+    否则「某个脚本到底有没有被跑」只能看到单行写法，块写法会被判成没跑（规则 6 的假红）。
     """
     lines = text.splitlines()
     try:
@@ -213,6 +240,7 @@ def parse_workflow(text: str) -> dict[str, WorkflowJob]:
         timeout: int | None = None
         relaxed: list[tuple[str, str, int]] = []
         relaxed_job: tuple[str, int] | None = None
+        commands: list[str] = []
         step_name = "<步骤外>"
         for offset, raw in enumerate(lines[line_no - 1 : stop]):
             current = line_no + offset
@@ -238,12 +266,24 @@ def parse_workflow(text: str) -> dict[str, WorkflowJob]:
             step_level = STEP_LEVEL_COE_RE.fullmatch(body)
             if step_level and is_enabled(step_level.group(1)):
                 relaxed.append((step_name, step_level.group(1), current))
+            inline = RUN_INLINE_RE.fullmatch(body)
+            if inline:
+                commands.append(inline.group(1).strip())
+                continue
+            if RUN_BLOCK_RE.fullmatch(body):
+                block: list[str] = []
+                for follow in lines[current:]:
+                    if follow.strip() and len(follow) - len(follow.lstrip()) <= 8:
+                        break
+                    block.append(follow.strip())
+                commands.append("\n".join(block))
         jobs[name] = WorkflowJob(
             name=name,
             line=line_no,
             timeout=timeout,
             relaxed_steps=tuple(relaxed),
             relaxed_job=relaxed_job,
+            run_commands=tuple(commands),
         )
     return jobs
 
@@ -271,7 +311,7 @@ def section_rows(text: str, section: str) -> list[tuple[int, list[str]]]:
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
         if not cells or set(cells[0]) <= set("-: "):
             continue
-        if cells[0].strip("`") in ("job", "marker"):
+        if cells[0].strip("`") in HEADER_CELLS:
             continue
         rows.append((line_no, cells))
     return rows
@@ -325,6 +365,21 @@ def parse_doc_markers(text: str) -> dict[str, int]:
     if not markers:
         raise SystemExit(f"策略文档的 {MARKER_SECTION} 段是空的")
     return markers
+
+
+def parse_doc_self_checks(text: str) -> list[DocSelfCheck]:
+    checks: list[DocSelfCheck] = []
+    for line_no, cells in section_rows(text, SELF_CHECK_SECTION):
+        checks.append(
+            DocSelfCheck(
+                script=code(cell(cells, 0, line_no, SELF_CHECK_SECTION)),
+                job=code(cell(cells, 1, line_no, SELF_CHECK_SECTION)),
+                line=line_no,
+            )
+        )
+    if not checks:
+        raise SystemExit(f"策略文档的 {SELF_CHECK_SECTION} 段是空的")
+    return checks
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +476,41 @@ def check_markers(markers: dict[str, int], doc_markers: dict[str, int], report: 
         report.ok("marker 覆盖", f"{len(markers)} 个 marker 全部有归属，且没有多余条目")
 
 
+def runs_script(job: WorkflowJob, script: str) -> bool:
+    """这个 job 的某条 run 是否真的调用了 script（按 `xxx.py` 路径 token 精确比对）。
+
+    只认整段路径 token，不做子串匹配：`tools/check_retry.py` 与 `check_retry.py` 视为同一个
+    脚本（文档里可以只写文件名），但 `tools/check_retry_extra.py` 不会因此被算成命中。
+    """
+    wanted = script.strip()
+    for command in job.run_commands:
+        for token in SCRIPT_TOKEN_RE.findall(command):
+            if token == wanted or token.endswith(f"/{wanted}"):
+                return True
+    return False
+
+
+def check_self_checks(workflow_jobs: dict[str, WorkflowJob], doc_checks: list[DocSelfCheck], report: Report) -> None:
+    print("\n== ⑤ 自检脚本真的在 CI 上跑 ==")
+    for item in doc_checks:
+        label = f"自检 {item.script}"
+        job = workflow_jobs.get(item.job)
+        if job is None:
+            report.bad(
+                label,
+                f"策略文档第 {item.line} 行说它跑在 job「{item.job}」里，但 workflow 里没有这个 job",
+            )
+            continue
+        if not runs_script(job, item.script):
+            report.bad(
+                label,
+                f"策略文档第 {item.line} 行说 CI 会跑它，但 workflow 的 job「{item.job}」"
+                f"（第 {job.line} 行起）里没有任何一条 run 调用它——文档承诺的执行不存在",
+            )
+        else:
+            report.ok(label, f"job「{item.job}」里确有一步调用（文档:{item.line}）")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="校验 docs/质量门禁策略.md 与 test.yml / pytest.ini 是否一致。")
     parser.add_argument("-v", "--verbose", action="store_true", help="逐条打印 marker 与 job 的归属行号")
@@ -432,6 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     doc_jobs = parse_doc_jobs(doc_text)
     doc_relaxed = parse_doc_relaxed(doc_text)
     doc_markers = parse_doc_markers(doc_text)
+    doc_checks = parse_doc_self_checks(doc_text)
 
     print(f"[gate-policy] workflow job：{'、'.join(workflow_jobs)}")
     print(f"[gate-policy] pytest.ini marker（{len(markers)} 个）：{'、'.join(markers)}")
@@ -442,6 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     check_blocking(workflow_jobs, doc_jobs, report)
     check_relaxed_steps(workflow_jobs, doc_relaxed, report)
     check_markers(markers, doc_markers, report, args.verbose)
+    check_self_checks(workflow_jobs, doc_checks, report)
 
     print()
     if report.failures:

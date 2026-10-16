@@ -599,6 +599,33 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
 
 ---
 
+### 变更 —— 把「写在文档里、CI 从不执行」的规矩接进流水线（本轮）
+
+这一轮只治一种假绿，它和「没跑成当通过」同形但更安静：**文档拿一个自检脚本当质量证据，
+而没有任何流水线执行过它。** `tools/check_retry.py` 的 23 条断言就是这种状态——
+`README.md` 三处引用它的「23/23 通过」，而 `.github/workflows/test.yml` 里
+`check_retry` 出现 **0 次**。
+
+- **补上那一步（`.github/workflows/test.yml`）**：挂在 `test` job 里、平台层自测之后、
+  flaky 账本之前。选 `test` job 是因为它是唯一装了完整 `requirements.txt` 的 job——
+  `check_retry.py` 只依赖 `requests` + `allure` + 仓内 `apis`，裸跑即绿，故也不设
+  `PYTHONPATH`（与相邻两步的口径一致），不设 `continue-on-error`（它是判定步骤）。
+- **让门禁脚本钉住它（`scripts/check_gate_policy.py` 新增规则 6）**：策略文档新增
+  **第四段机器可读表格** `<!-- gate-policy:self-checks -->`，声明「哪个脚本跑在哪个 job」；
+  脚本会去 workflow 里找对应的 `run:`。这条对账是**单向**的——只保证「文档说 CI 会跑它」
+  这句话是真的，不要求 workflow 里每个脚本调用都登记（`export_openapi.py` /
+  `case_index.py` / `flaky_report.py` 属于「怎么跑测试」的机制细节，强迫登记只会
+  让表格变成负担，而负担的下场一定是被人绕过）。
+- **两种形态的 `run:` 都认**：单行 `run: 命令` 与块写法 `run: |`。块写法不额外处理
+  就会被判成「没跑」——那会变成规则 6 自己的假红，比它要拦的假绿更难查。
+- **可证伪实验**（五种场景，用内存副本改造输入、不动源文件）：原样 PASS；
+  删掉 workflow 那一步 → FAIL「文档承诺的执行不存在」；文档登记一个 workflow 里
+  不存在的脚本 → FAIL；登记到错误的 job（`lint`）→ FAIL；登记到不存在的 job → FAIL。
+- **同时更新了**：`README.md` 的自检块与 job 表、`docs/质量门禁策略.md` 的引言
+  （三段 → 四段）、第二节后的新「二之一、自检脚本表」、§八的真值处数与表格张数。
+
+---
+
 ## 2026-10-13
 
 ### 新增
