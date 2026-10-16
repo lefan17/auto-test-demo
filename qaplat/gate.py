@@ -58,6 +58,7 @@ class LayerSpec:
     timeout_seconds: int
     min_pass_rate: float
     max_duration_seconds: int
+    max_errors: int
 
 
 #: 四层定义。``marker_expr`` 由 FROZEN_CLI.md 固定，不得自创 marker。
@@ -67,6 +68,9 @@ class LayerSpec:
 #: - nightly 0.98 / release 0.95：保留少量容忍度，把「已知缺陷探针」这类长期红灯
 #:   挡在阻断线之外；真正想阻断的回归仍会通过 report 的归因页暴露出来。
 #: - ``max_duration_seconds`` 取目标时长的 1.5 倍左右，超了算预算违规但不伪装成失败。
+#: - ``max_errors``（2026-10 补的第五条 blocking 判据）：阻塞层一条都不许 error，
+#:   全量层留少量环境抖动余量（浏览器/网络故障不属于被测回归）。它堵的缺口是
+#:   「没跑成的用例被静默当成通过」——见 ``evaluate()`` 里 error 判据必须独立的原因。
 LAYERS: dict[Layer, LayerSpec] = {
     Layer.SMOKE: LayerSpec(
         layer=Layer.SMOKE,
@@ -74,6 +78,7 @@ LAYERS: dict[Layer, LayerSpec] = {
         timeout_seconds=600,
         min_pass_rate=1.0,
         max_duration_seconds=90,
+        max_errors=0,
     ),
     Layer.PR: LayerSpec(
         layer=Layer.PR,
@@ -81,6 +86,7 @@ LAYERS: dict[Layer, LayerSpec] = {
         timeout_seconds=900,
         min_pass_rate=1.0,
         max_duration_seconds=450,
+        max_errors=0,
     ),
     Layer.NIGHTLY: LayerSpec(
         layer=Layer.NIGHTLY,
@@ -88,6 +94,7 @@ LAYERS: dict[Layer, LayerSpec] = {
         timeout_seconds=1800,
         min_pass_rate=0.98,
         max_duration_seconds=1200,
+        max_errors=3,
     ),
     Layer.RELEASE: LayerSpec(
         layer=Layer.RELEASE,
@@ -95,6 +102,7 @@ LAYERS: dict[Layer, LayerSpec] = {
         timeout_seconds=2700,
         min_pass_rate=0.95,
         max_duration_seconds=2400,
+        max_errors=5,
     ),
 }
 
@@ -300,7 +308,8 @@ def evaluate(spec: LayerSpec, run: RunRecord) -> GateResult:
     """把一轮结果与层阈值比对。
 
     ``violations`` 只装**阻断性**违规，空元组即达标——CLI 的退出码直接由它决定，
-    不做第二套判断逻辑。诊断信息（例如「本轮有 N 条 error」）不进这里，进 report。
+    不做第二套判断逻辑。非阻断的诊断信息（例如归因分类）不进这里，进 report；
+    但 error 超预算属于**第五条阻断判据**，它故意留在 violations 里。
     """
     violations: list[str] = []
     decisive = run.passed + run.failed
@@ -313,6 +322,14 @@ def evaluate(spec: LayerSpec, run: RunRecord) -> GateResult:
             f"通过率 {run.pass_rate:.1%} 低于阈值 {spec.min_pass_rate:.1%}"
             f"（passed={run.passed} failed={run.failed} total={run.total}）"
         )
+
+    # error 预算**必须独立判定，不能挂进上面的 else-if 链**。
+    # 理由：分母 ``decisive = passed + failed`` 不含 error，实测 smoke 层
+    # ``total=36 passed=30 failed=0 errors=6`` 会算出 ``decisive=30``、``pass_rate=1.0``。
+    # 一旦把它接成 ``elif``，该轮会先被 pass_rate 分支判为达标，``run.errors`` 永远轮不到检查，
+    # 「没跑成的用例」就被静默当成通过。所以这里另起一条独立判据。
+    if run.errors > spec.max_errors:
+        violations.append(f"error 数 {run.errors} 超出预算 {spec.max_errors}（没跑成的用例不计入通过率，需单独阻塞）")
 
     within_budget = run.duration_seconds <= spec.max_duration_seconds
     if not within_budget:

@@ -128,6 +128,35 @@ def test_skipped_and_xfailed_do_not_enter_pass_rate() -> None:
     assert result.violations == ()
 
 
+def test_errors_within_budget_do_not_block() -> None:
+    """正例：error 数在预算内不阻断——nightly 预算 3，2 条 error 仍算达标。"""
+    result = gate.evaluate(LAYERS[Layer.NIGHTLY], _run(passed=36, errors=2))
+    assert result.errors == 2
+    assert result.violations == ()
+    assert gate.exit_code_for(result) == 0
+
+
+def test_errors_over_budget_block_the_gate() -> None:
+    """反例：smoke 层 total=36 passed=30 errors=6，通过率 100% 但 error 超预算 0。
+
+    这条正是本次改动的靶子：``decisive = passed + failed = 30``、``pass_rate = 1.0``，
+    若 error 判据挂在 pass_rate 分支之后，它会走 pass_rate 分支判达标。
+    """
+    result = gate.evaluate(LAYERS[Layer.SMOKE], _run(passed=30, errors=6))
+    assert result.pass_rate == pytest.approx(1.0)
+    assert len(result.violations) == 1
+    assert "error 数" in result.violations[0]
+    assert gate.exit_code_for(result) == 1
+
+
+def test_errors_exactly_at_budget_is_not_a_violation() -> None:
+    """边界：``errors == max_errors`` 等于预算，不算违规（判据是严格大于）。"""
+    result = gate.evaluate(LAYERS[Layer.NIGHTLY], _run(passed=36, errors=3))
+    assert result.errors == LAYERS[Layer.NIGHTLY].max_errors == 3
+    assert result.violations == ()
+    assert gate.exit_code_for(result) == 0
+
+
 def test_over_budget_duration_fails_the_gate() -> None:
     result = gate.evaluate(LAYERS[Layer.SMOKE], _run(passed=10, duration=1000.0))
     assert result.within_budget is False
