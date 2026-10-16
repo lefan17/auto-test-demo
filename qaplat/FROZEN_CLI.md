@@ -29,12 +29,18 @@
 现有 `pytest.ini` 已注册 marker：`smoke / regression / api / ui / mes / login / contract`。
 本层新增且必须注册：`platform`。各层表达式：
 
-| 层 | `-m` 表达式 | 目标时长 |
-|---|---|---|
-| smoke | `smoke` | < 1 min |
-| pr | `smoke or api or platform` | 3–5 min |
-| nightly | `not ui` | 全量非 UI |
-| release | `` （空，全量，含 ui） | 含 UI |
+| 层 | `-m` 表达式 | 目标时长 | `min_pass_rate` | `max_errors` |
+|---|---|---|---|---|
+| smoke | `smoke` | < 1 min | 1.0 | 0 |
+| pr | `smoke or api or platform` | 3–5 min | 1.0 | 0 |
+| nightly | `not ui` | 全量非 UI | 0.98 | 3 |
+| release | `` （空，全量，含 ui） | 含 UI | 0.95 | 5 |
+
+`max_errors` 是 2026-10 补的**第五条 blocking 判据**，堵的是这个缺口：`evaluate()` 原先只看
+`decisive = passed + failed`，`decisive == 0` 才拦，于是「36 条里 30 条通过、6 条 error」算出
+`pass_rate = 100%`、门禁报达标——**没跑成的用例被静默当成通过**。取值与 `min_pass_rate` 同一套
+松紧梯度：阻塞层（smoke/pr）一条都不许 error，全量层（nightly/release）留少量环境抖动余量
+（夜间/发布跑 `-m "not ui"` 与全量，浏览器与网络抖动不属于被测回归）。
 
 ## 三、`qaplat/gate.py` 必须导出的东西
 
@@ -53,6 +59,7 @@ class LayerSpec:
     timeout_seconds: int
     min_pass_rate: float
     max_duration_seconds: int
+    max_errors: int  # 本轮允许的 error 条数上限，超出即不达标
 
 
 LAYERS: dict[Layer, LayerSpec]
@@ -151,6 +158,16 @@ def collect_cases(pytest_args: Sequence[str]) -> list[CaseInfo]: ...
 **诚实性红线**：覆盖矩阵不许靠猜。归属只有两个来源——显式 `covers` marker，
 或用例源码里出现的接口路径字符串。二者都没有就算**未覆盖**，并在报告里如实标出。
 
+**自测排除（2026-10 补）**：`testcases/platform/**` 是**平台自身的单元测试**，不参与路径归属。
+理由：那里出现的 `/api/v1/...` 是喂给提取器/矩阵函数的**输入样本**（例如断言
+`client.get("/api/v1/materials")` 能被认成 `create_material_api_v1_materials_post`），
+不是对被测服务的调用；让它参与归属，等于矩阵宣称一个从不调用该接口的文件覆盖了它——
+比漏报更危险，正好撞在上面的红线上。实现口径：`read_referenced_paths()` 对
+`ROOT / "testcases" / "platform"` 前缀下的文件返回空元组（**返回空元组**，不是抛异常；
+`covers` marker 仍然生效，平台层用例若真要声明归属，显式写 marker 即可）。
+判定用 `Path` 归一化后的前缀比较，不靠字符串 `startswith`——否则
+`testcases/platform_extra/` 会被误伤。该规则要有平台层单测钉住（正例 + 反例各一条）。
+
 ## 六、目录归属（硬边界）
 
 | 路径 | 归属 |
@@ -161,7 +178,15 @@ def collect_cases(pytest_args: Sequence[str]) -> list[CaseInfo]: ...
 | `work/auto-test-demo/pytest.ini` | **仅允许追加 marker**（`platform`、`covers`） |
 | `work/auto-test-demo/pyproject.toml` | **仅允许在 `[tool.mypy] files` 追加 `"qaplat"`** |
 | `work/auto-test-demo/apis/**`、`common/**`、`mock_server/**`、`login_app/**`、`ui/**` | **禁止改动** |
-| `work/auto-test-demo/testcases/{api,ui,mes,login,contract}/**` | **禁止改动** |
+| `work/auto-test-demo/testcases/{api,ui,mes,login,contract}/**` | **禁止改动**（例外：只允许**追加** `@pytest.mark.covers("opId")` 标注，2026-10 获授权，见下） |
+
+**`covers` 追加授权（2026-10）**：覆盖矩阵对 MES/UI 侧严重低估——那些用例走 `apis/` 封装对象，
+源码里只写相对路径（`f"/work-orders/{order_no}/approve"`，`/api/v1` 前缀在 base_url 里），
+而提取器只认 `/api` 开头的字面量，于是 15 个 GAP 里有 10 个其实被真实调用却显示为未覆盖。
+`registry.py:13-15` 早已写明正解是「在用例上加 `covers` marker」。故本表对
+`testcases/{api,ui,mes,login,contract}/**` 的禁令开一个**唯一例外**：允许追加
+`@pytest.mark.covers(...)` 装饰器，**不得**改动任何断言、fixture、控制流或 import。
+不加宽提取器的推断能力（那会破坏诚实性红线）。
 
 ## 七、运行环境（实测，别再试探）
 

@@ -91,17 +91,18 @@ $py = 'C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe'
 `not ui` 写成 `not_ui`，不会报错，只会静默地把该层变成「跑 0 条、全绿」——这是最危险
 的一类失效，所以 `testcases/platform/test_gate_layers.py` 把四个表达式逐字钉死）。
 
-| 层 | `-m` 表达式 | 选中的是 | 何时跑 | 阈值 `min_pass_rate` | 时长预算 |
-| --- | --- | --- | --- | --- | --- |
-| `smoke` | `smoke` | 打了 `smoke` 标记的 36 条 | 每次提交前 / 本地改完随手跑 | `1.00` | ≤ 90s |
-| `pr` | `smoke or api or platform` | 冒烟 + 接口 + 平台层自身 | 开 PR / 合并前 | `1.00` | ≤ 450s |
-| `nightly` | `not ui` | 除 UI 之外的全部 | 每日定时（UI 依赖浏览器，夜间机器不一定有） | `0.98` | ≤ 1200s |
-| `release` | 空（**不带 `-m`** = 全量） | 全部，含 UI | 发版前 | `0.95` | ≤ 2400s |
+| 层 | `-m` 表达式 | 选中的是 | 何时跑 | 阈值 `min_pass_rate` | error 预算 `max_errors` | 时长预算 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `smoke` | `smoke` | 打了 `smoke` 标记的 36 条 | 每次提交前 / 本地改完随手跑 | `1.00` | `0` | ≤ 90s |
+| `pr` | `smoke or api or platform` | 冒烟 + 接口 + 平台层自身 | 开 PR / 合并前 | `1.00` | `0` | ≤ 450s |
+| `nightly` | `not ui` | 除 UI 之外的全部 | 每日定时（UI 依赖浏览器，夜间机器不一定有） | `0.98` | `3` | ≤ 1200s |
+| `release` | 空（**不带 `-m`** = 全量） | 全部，含 UI | 发版前 | `0.95` | `5` | ≤ 2400s |
 
 `timeout_seconds`（600 / 900 / 1800 / 2700）是**硬杀线**：超时按 `exit_code=124` 处理，
 按未达标算。`max_duration_seconds` 是**预算线**：超了记进 `violations`，但不改退出码语义。
+`max_errors` 是 2026-10 补的**第五条阻断判据**，见 §3.1 与 §3.3。
 
-### 3.1 通过率的分母是「有结论的用例」
+### 3.1 通过率的分母是「有结论的用例」，而 error 由独立预算兜底
 
 `pass_rate = passed / (passed + failed)`。**`error` 不进分母。**
 
@@ -110,19 +111,39 @@ $py = 'C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe'
 `smoke` 层会在这台机器上**常年红灯**，红灯一多就没人看了——门禁的价值在于它红了就一定是
 真的有事。
 
-代数是：本机 `smoke` 层 `total=36 passed=30 failed=0 errors=6` → `pass_rate=100.0%` → **达标**。
-但 `errors=6` 会原样打印在 `gate` 输出里，**不隐藏**：误差是被允许的，不是被掩盖的。
+但「不进分母」有一个必须堵上的副作用：分母不含 error，于是一轮里
+`total=36 passed=30 failed=0 errors=6` 会算出 `pass_rate=100.0%`，**如果只看通过率就会判达标**，
+「没跑成的用例」被静默当成通过。这正是新增 `max_errors` 的原因：**error 不参与通过率，
+但单独受预算约束**。
 
-### 3.2 会算未达标的四种情况
+本机 `smoke` 层那组实测值现在的结论是：`pass_rate=100.0%`（通过率没问题），
+但 `errors=6 > max_errors=0` → **未达标**，`exit_code=1`。
+
+### 3.2 error 判据为什么必须独立，不能挂进 else-if 链
+
+`evaluate()` 的通过率判据是一条 `if/elif` 链。`max_errors` 判据**故意写在链外**：
+
+```python
+if run.errors > spec.max_errors:
+    violations.append(...)
+```
+
+若把它接成链里的一个 `elif`，上面那组 `smoke` 数据会先命中 `pass_rate < min_pass_rate`
+（`1.0 < 1.0` 为假）走到链尾判达标，`run.errors` **永远轮不到检查**——判据写了等于没写。
+所以判据必须是独立的一条 `if`，不是链上的一环。
+
+### 3.3 会算未达标的五种情况
 
 写进 `GateResult.violations`：
 
 1. `total == 0` —— 一条都没跑到（表达式写错、标记打错、路径变了都会这样）；
 2. `passed + failed == 0` —— 全是 error/skip，没有有结论的用例；
 3. `pass_rate < min_pass_rate`；
-4. `duration_seconds > max_duration_seconds`。
+4. `errors > max_errors` —— 没跑成的用例超出该层预算（阻塞层 `smoke`/`pr` 一条都不许）；
+5. `duration_seconds > max_duration_seconds`。
 
-第 1、2 条专门用来堵「静默全绿」：跑 0 条**不是**通过。
+第 1、2 条专门用来堵「静默全绿」：跑 0 条**不是**通过。第 4 条堵的是它的孪生缺口
+**「没跑成 ≠ 通过」**——只堵前者不堵后者，等于把 error 当成一种隐形的 pass。
 
 ---
 
@@ -153,11 +174,32 @@ $py = 'C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe'
 为此 CLI 的归属详情按文件归组显示：`188 条用例 / 1 个文件`。`registry.owner_files()` 提供
 这个视图。
 
-### 4.2 已知的真实缺口（不是 bug）
+### 4.2 平台层自测不参与归属（自测排除）
+
+`testcases/platform/**` 是**平台自身的单元测试**，它们源码里的 `/api/v1/...` 是喂给提取器的
+**输入样本**（例如断言 `client.get("/api/v1/materials")` 能被认成某个 operationId），
+不是对被测服务的调用。让它们参与归属，等于矩阵宣称一个从不调用该接口的文件覆盖了它——
+比漏报更危险。
+
+所以 `read_referenced_paths()` 对 `ROOT / "testcases" / "platform"` 下的文件**返回空元组**
+（返回空元组而非抛异常；`covers` marker 仍然生效）。判定用 `Path` 归一化后的组件级前缀比较，
+不是字符串 `startswith` ——否则 `testcases/platform_extra/` 会被误伤。三条单测钉住它：
+正例（平台目录归零）、反例（仓库外照常提取）、防误伤（`platform_extra` 不被吞）。
+
+### 4.3 已知的真实缺口（不是 bug）
 
 `testcases/api/**` 的 42 条用例走的是 `apis/` 封装对象，源码里**没有任何 `/api` 字面量**，
 所以在来源 2 下它们一条归属都拿不到。这是预期行为，也是这份矩阵最该暴露的事实：**接口
 用例没有把「我在测哪个 operationId」说出来**。补的办法就是给这些用例打 `covers` marker。
+
+MES/UI 侧同病不同源：它们写的是**相对路径**（`f"/work-orders/{order_no}/approve"`，
+`/api/v1` 前缀在 `base_url` 里），而来源 2 的正则只认 `/api` 开头。2026-10 已给其中
+**经运行时流量核对确认真实调用**的 10 个 operation 补上 `covers` 标注，覆盖率
+`14/29 = 48.3%` → `24/29 = 82.8%`。剩 5 个 GAP 全仓确实无任何调用者，如实留白。
+
+补标注时**不许按方法名推断**：`DataFactory.work_order()`（POST `/work-orders`）与
+`MesApi.work_order()`（GET `/work-orders/{order_no}`）同名，按名字闭包会把只能建单的用例
+错标成「覆盖了查单接口」。判定口径只能是**运行时实测流量**，不是 AST 猜测。
 
 ---
 
