@@ -14,6 +14,7 @@ annotated-types==0.8.0
     # via pydantic
 anyio==4.15.1
     # via
+    #   httpx
     #   schemathesis
     #   starlette
 attrs==26.1.0
@@ -22,7 +23,10 @@ attrs==26.1.0
     #   jsonschema
     #   referencing
 certifi==2026.7.22
-    # via requests
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
 charset-normalizer==3.5.2
     # via requests
 click==8.5.0
@@ -42,9 +46,15 @@ graphql-core==3.2.13
 greenlet==3.1.1
     # via playwright
 h11==0.16.0
-    # via uvicorn
+    # via
+    #   httpcore
+    #   uvicorn
 harfile==0.5.0
     # via schemathesis
+httpcore==1.0.9
+    # via httpx
+httpx==0.28.1
+    # via -r requirements.txt
 hypothesis==6.169.1
     # via
     #   hypothesis-graphql
@@ -54,6 +64,7 @@ hypothesis-graphql==0.13.2
 idna==3.20
     # via
     #   anyio
+    #   httpx
     #   requests
 iniconfig==2.3.1
     # via pytest

@@ -82,7 +82,7 @@ playwright install chromium
 > pip install -r requirements.lock
 > ```
 >
-> 两个文件的分工：`requirements.txt` 是**人维护的**直接依赖（15 个，全部 `==` 钉死版本），
+> 两个文件的分工：`requirements.txt` 是**人维护的**直接依赖（16 个，全部 `==` 钉死版本），
 > 它是唯一真值来源；`requirements.lock` 是 `pip-compile` 生成的**完整传递依赖树**
 > （177 行 / 59 个 pin，含 anyio / certifi / urllib3 / greenlet 等几十个间接包）。
 > 只锁直接依赖的话，传递依赖会随环境漂移——本地和 CI 装的不是同一棵树，

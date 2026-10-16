@@ -32,6 +32,14 @@ pytest-rerunfailures==16.7
 requests==2.34.2
 PyYAML==6.0.3
 jsonschema==4.26.0
+# httpx：traffic-replay 子项目直接用（traffic-replay/replay/player.py:30 `import httpx`、
+# :206 `httpx.AsyncClient`），而 CI test job 的「运行流量回放子项目自测」那一步跑的就是它，
+# 所以必须在这里显式声明。它过去一直是靠 schemathesis 顺带装进来的（迁移前 lock 里
+# httpx 的溯源是 `# via schemathesis`）；schemathesis 4.31.1 只在 dev/tests extra 里要
+# httpx，这条传递链断了——不显式声明，CI 上 traffic-replay 会直接
+# ModuleNotFoundError: No module named 'httpx'（已实测复现）。
+# 0.28.1 是迁移前的既有版本，pip-audit 无已知漏洞。
+httpx==0.28.1
 
 # === UI 测试 ===
 playwright==1.63.0
