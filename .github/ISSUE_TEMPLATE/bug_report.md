@@ -52,9 +52,11 @@ body:
       description: |
         贴**原始输出**（可以截尾，但要保留失败摘要和那条 AssertionError 的完整正文）。
         如果只贴截图，请确保截图里有命令与退出码。
-        ⚠️ 请顺手确认这不是"环境问题"：UI 用例在受限环境（临时目录不可写、
-        无法建进程管道）会以 `PermissionError: [WinError 5]` 在 setup 阶段全失败，
-        那不是用例的缺陷。
+        ⚠️ 请顺手确认这不是"环境问题"：**没装 Playwright 浏览器**时，需要真实浏览器的 UI
+        用例会在 setup 阶段全 error（`BrowserType.launch: Executable doesn't exist at
+        ...\ms-playwright\chromium_headless_shell-<rev>\...\chrome-headless-shell.exe`），
+        那不是用例的缺陷——先 `python -m playwright install chromium` 把浏览器装上再复测
+        （`test_mes_web_app.py` 那 15 条走 HTTP 层、不起浏览器，不会受这条影响）。
       render: text
     validations:
       required: true

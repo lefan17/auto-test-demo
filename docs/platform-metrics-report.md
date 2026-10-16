@@ -366,6 +366,9 @@ CI 的判据是**退出码**而非计数，两者差异不影响 job 结论。
 1. **`nightly` 与 `release` 两层从未真跑过门禁。** `release` 含 `ui` 目录，本机没有 Playwright
    浏览器，14 条 UI 用例会全 error；跑它需要先 `playwright install`。表中 `not ui` 的收集数
    （448）是实测的，但该层的**执行耗时与判定未实测**，因此不在第 3 节表里。
+   〔后续注记〕本机此后已装好 Playwright 浏览器（playwright 1.63.0 对应的
+   `chromium_headless_shell-1243`），UI 用例现可真实执行：`pytest -m ui -o addopts= -q`
+   实测 34 passed；上面「14 条 UI 用例会全 error」是本报告时点的历史观测，保留不改。
 2. **`metrics flaky` 的 0 条不构成证据**（只有 2 轮，无翻转样本）。已在 §6 写明。
 3. **没有跑过 `pytest -n auto`（xdist）下的门禁**。`_dump.py` 已按契约处理好 xdist worker
    （worker 侧不写文件、controller 侧写 JSON），但**该分支无实测覆盖**，属于「按设计写好、

@@ -560,7 +560,7 @@ pytest -m login                           29 passed, 476 deselected in  2.58s
 pytest -m contract                       213 passed, 281 deselected, 11 xfailed in 18.69s
 pytest -m perf                             2 passed, 503 deselected in  4.53s
 pytest -m platform                       105 passed, 400 deselected in  7.62s
-pytest -m ui                             15 passed, 19 errors in 10.13s（收集 34 条；19 条 error 全是本机沙箱的 setup 失败，见下）
+pytest -m ui                             34 passed, 471 deselected in 41.60s（收集 34 条；浏览器已装好，全绿，见下）
 
 cd traffic-replay; pytest                173 passed in 15.5s（批次 2，自带 pytest.ini）
 
@@ -593,17 +593,21 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > 批次 2 的 28 个文件**不进**这个分母：它自带 rootdir、`--cov=.` 只覆盖根仓库，
 > 且它的 `analyze/` `recorder/` `replay/` 都没有 `__init__.py`（靠 `conftest.py` 插 `sys.path` 导入）。
 
-> **`-m ui` 那一行是本次真的重跑过的，不再留"未重跑"**：命令是
-> `pytest -m ui -o addopts=`，结果是 `15 passed, 471 deselected, 19 errors in 10.13s`，退出码 1。
-> 19 条 error **全部**是同一根因：setup 阶段
-> `PermissionError: [WinError 5] 拒绝访问。`，栈底是 `asyncio/windows_utils.py` 里的
-> `_winapi.CreateNamedPipe(...)` —— 本机沙箱禁止 asyncio 建命名管道。19 条无例外
-> （`test_inventory.py` 8 条 / `test_login.py` 6 条 / `test_mes_mixed_flow.py` 5 条），
-> 所以它是**环境限制，不是用例缺陷、也不是被测代码的缺陷**——换一个不限制命名管道的
-> 运行环境这条限制就不存在。收集数 34 条（`pytest -m ui --collect-only -q -o addopts=`
-> → `34/505 tests collected`），所以"34 条里 15 条过、19 条卡在 setup"是环境截断出来的分布，
-> **不是通过率**，别把它读成"UI 用例有一半是坏的"。这些用例打的是公共 demo 站
-> `https://www.saucedemo.com`（配在 `data/config.yaml`），全程真实浏览器交互。
+> **`-m ui` 那一行是本次真的重跑过的**：命令是 `pytest -m ui -o addopts=`，
+> 结果是 `34 passed, 471 deselected in 40.19s`，退出码 0。收集数 34 条
+> （`pytest -m ui --collect-only -q -o addopts=` → `34/505 tests collected`）。
+> 这 34 条里，15 条（`testcases/ui/test_mes_web_app.py`）走 HTTP 层、**不申请 `page`
+> fixture、不起浏览器**；另外 19 条（`test_inventory.py` 8 条 / `test_login.py` 6 条 /
+> `test_mes_mixed_flow.py` 5 条）需要真实浏览器，打的是公共 demo 站
+> `https://www.saucedemo.com`（配在 `data/config.yaml`）。
+> **浏览器没装时，正是这 19 条在 setup 阶段全 error**（那 15 条 HTTP 层的照样过），
+> 报错是 `playwright._impl._errors.Error: BrowserType.launch: Executable doesn't exist at
+> ...\ms-playwright\chromium_headless_shell-1243\chrome-headless-shell-win64\chrome-headless-shell.exe`。
+> 这是**运行环境属性（缺浏览器），不是用例缺陷、也不是被测代码的缺陷**：本机装浏览器之前
+> 观测到的就是 `15 passed, 19 errors`，而那 19 条恰好就是上面 8 + 6 + 5 这 19 条（分布完全对齐）；
+> 装上对应 rev 的浏览器后就是 34 条全绿（也就是上面那一行）。
+> 早期本文件把同一批 error 归因成"沙箱禁止 asyncio 建命名管道（`_winapi.CreateNamedPipe`）"，
+> 那个归因不成立：那 19 条 error 逐条都能用"缺浏览器"复现，没有一条是那个原因。
 >
 > **覆盖率门禁挂在 `-m api` 上，而它现在有 61.41%，不是"全量"的 83%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
@@ -955,6 +959,9 @@ allure generate allure-results -o allure-report
 
 **2. `playwright install` 报 TLS/证书错误**
 官方 CDN 在国内常被阻断，设置 `PLAYWRIGHT_DOWNLOAD_HOST` 指向 npmmirror（见上方安装步骤）。
+实测（playwright 1.63.0）：设上它之后 `python -m playwright install chromium --dry-run` 给出的
+下载地址就会变成 `https://cdn.npmmirror.com/binaries/playwright/builds/cft/<版本>/win64/...zip`，
+HTTP 200 可直接下载。
 
 **3. 浏览器启动报 `EPERM: operation not permitted, mkdtemp ...\Temp\playwright-artifacts`**
 系统临时目录受限（企业电脑、沙箱环境常见）。把临时目录指到项目内：
@@ -971,33 +978,53 @@ PowerShell 默认 GBK。设置 `$env:PYTHONIOENCODING = "utf-8"`，或在 VS Cod
 **5. UI 用例想看着浏览器跑**
 把 `testcases/ui/conftest.py` 里 `p.chromium.launch(headless=True)` 改成 `headless=False`。
 
+注意这需要**完整版** Chromium，headless shell 不够：Playwright 1.63 起
+`headless=True` 用的是独立的 `chromium_headless_shell-<rev>`，`headless=False` 要的是完整的
+`chromium-<rev>`，只装了前者会报
+`Executable doesn't exist at ...\ms-playwright\chromium-1243\chrome-win64\chrome.exe`（本机实测）。
+先 `python -m playwright install chromium` 把两者都装上（`--dry-run` 会把它们分别列出来）。
+
 **6. `playwright install chromium` 完全没输出、永远不动（0 下载）**
 少数机器上 Playwright 自带的下载器会静默卡死。判断方法：看 `%USERPROFILE%\AppData\Local\ms-playwright`
-下有没有新建目录、有没有增长。绕开办法是手工下载 + 解压（镜像直连实测 8 秒下完 139MB）：
+下有没有新建目录、有没有增长。绕开办法是**先问真值、再手工下载 + 解压**——
+版本号和下载地址只有一个可靠来源，就是 `--dry-run` 的输出，**不要照抄本文档里写死的 rev**：
 
 ```powershell
-# 1. 先问清楚它期望放到哪、从哪下
+# 1. 先问清楚它期望放到哪、从哪下（这一步就是真值来源，换版本时重跑它）
 python -m playwright install chromium --dry-run
 
-# 2. 用 curl 直连镜像下载（7 秒 / 139MB，比自带下载器可靠）
-curl.exe -L -o .\.tmp\chromium-win64.zip `
-  https://cdn.npmmirror.com/binaries/playwright/builds/chromium/1140/chromium-win64.zip
+# 2. 照上面输出里的 "Download url" 原样下载（下面的 $url 用第 1 步的输出替换）
+#    国内可以先设镜像，让第 1 步直接给出 npmmirror 的地址：
+$env:PLAYWRIGHT_DOWNLOAD_HOST = "https://cdn.npmmirror.com/binaries/playwright"
+$url = '<第 1 步输出的 Download url 原样>'
+curl.exe -L -o .\.tmp\chrome-headless-shell-win64.zip $url
 
-# 3. 解压到 Playwright 期望的目录（zip 顶层已经是 chrome-win）
-$dest = "$env:USERPROFILE\AppData\Local\ms-playwright\chromium-1140"
-Expand-Archive -Path .\.tmp\chromium-win64.zip -DestinationPath $dest -Force
+# 3. 解压到第 1 步输出里对应的 "Install location"（zip 顶层目录名就是 Playwright 期望的子目录名）
+$dest = "$env:USERPROFILE\AppData\Local\ms-playwright\chromium_headless_shell-<rev>"
+Expand-Archive -Path .\.tmp\chrome-headless-shell-win64.zip -DestinationPath $dest -Force
 
-# 4. 补两个标记文件，Playwright 靠它们判断"已安装且依赖已校验"
-New-Item -ItemType File -Force -Path "$dest\INSTALLATION_COMPLETE" | Out-Null
-New-Item -ItemType File -Force -Path "$dest\DEPENDENCIES_VALIDATED" | Out-Null
-
-# 5. 验证
+# 4. 验证
 python -c "from playwright.sync_api import sync_playwright as s; p=s().start(); b=p.chromium.launch(); print('OK', b.version); b.close(); p.stop()"
 ```
 
-> 注意：**这一步要用 PowerShell 做，不要用 Python 脚本做**。受限环境下 Python 进程写工作区外
-> 会直接 `PermissionError: [WinError 5] 拒绝访问`，而 PowerShell 可以。
-> 版本号 `1140` 是 Playwright 1.48 对应的 Chromium 版本号，换版本时以 `--dry-run` 的输出为准。
+> 注意几件事：
+> - **`--dry-run` 会列出多个浏览器**。以本机 playwright 1.63.0 为例，它是
+>   `Chrome for Testing 153.0.8010.12 (playwright chromium v1243)`（完整版，`headless=False` 用它）
+>   与 `Chrome Headless Shell 153.0.8010.12 (playwright chromium-headless-shell v1243)`
+>   （`headless=True` 用的就是它）。**默认的 headless 跑法要的是 headless shell**，
+>   只装完整版并不能让 headless 用例跑起来（本机实测：只放完整版时 headless 启动仍报
+>   找不到 `chromium_headless_shell-1243`）；想两种模式都能跑，两个 zip 都要装。
+> - 版本号 `1140` 是 Playwright 1.48 时代的编号，与本机 1.63.0 期望的 `1243` 对不上；
+>   照旧编号下载出来的目录名 Playwright 根本不认，只会继续报
+>   `Executable doesn't exist at ...`。同理，旧的 `builds/chromium/<rev>/chromium-win64.zip`
+>   老路径只对老 rev 有效（本机实测 1140 那个 URL 仍 200，但 `builds/chromium/1243/...` 是 404）。
+> - **标记文件不是必需的**：本机 `chromium_headless_shell-1243` 目录里**本来就没有**
+>   `INSTALLATION_COMPLETE` / `DEPENDENCIES_VALIDATED`，它照样能启动（1.63.0 只查可执行文件
+>   在不在）。补上无害，但别把它当必要条件。
+> - **这一步要用 PowerShell 做，不要用 Python 脚本来写这个目录**：受限环境下 Python 进程写
+>   工作区外会被直接拒绝（本机实测 `PermissionError: [Errno 13] Permission denied`，
+>   报错原文随环境不同，也有环境报 `[WinError 5]`），而 PowerShell 写同一路径可以。
+> - 不想手工做这一步，也可以用 `tools/install_chromium.py`：它自己跑 `--dry-run` 读真值。
 
 **7. 用 Docker 跑这套用例**
 

@@ -59,6 +59,6 @@
 - [ ] Docker 镜像**未构建验证**（本机没有可用的 daemon，只做了 `docker compose config` 静态校验）
 - [ ] pre-commit hooks **未在本地执行**（安装需要 ensurepip，受限环境会拒绝）
 - [ ] `pip-audit` **未在本地执行**（同上），只在 CI 上跑
-- [ ] UI 用例**未在本机跑通**（受限环境无法建进程管道，setup 阶段即失败）
+- [ ] UI 用例**未在本机跑通**（本机没装 Playwright 浏览器，需要真实浏览器的 19 条在 setup 阶段即 error）
 - [ ] mypy 未做到全仓零错误，已知技术债登记在 `pyproject.toml` 的 overrides 里
 -->
