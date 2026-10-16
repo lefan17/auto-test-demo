@@ -20,8 +20,8 @@
 **schemathesis**，而 schemathesis 并不在 venv 的 site-packages 里，它放在仓库外的
 `work/pylibs` 目录（纯目录，未安装）。因此：
 
-- 不带 PYTHONPATH 跑收集，只有 **311 条 + 1 个收集 ERROR**；
-- 带上 PYTHONPATH 才是 **400 条**（再加平台层自测 99 条，全量 499 条）。
+- 不带 PYTHONPATH 时收集只有 **317 条 + 1 个收集期 ERROR**；
+- 带上 PYTHONPATH 才是 **505 条**（其中平台层自测 105 条）。
 
 ```powershell
 chcp 65001 > $null

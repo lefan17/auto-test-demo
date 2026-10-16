@@ -569,6 +569,36 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
 
 ---
 
+### 变更 — 「qaplat 平台层》补齐两处盲区 + 文档口径回填（本轮）
+
+这一轮只动平台层与文档：一处是门禁的**假绿通道**，一处是覆盖矩阵的**自测污染**。
+
+- **门禁补 error 预算（`qaplat/gate.py`）**：`LayerSpec` 新增第六字段 `max_errors`，
+  四层取值 smoke `0` / pr `0` / nightly `3` / release `5`；`evaluate()` 在既有
+  else-if 链**之外**新增独立判据 `run.errors > spec.max_errors` 即不达标——
+  挂进链里会被 `pass_rate < min_pass_rate` 先命中（`decisive = passed + failed`
+  不含 error，smoke 实测 `pass_rate = 100.0%`），判据写了等于没写。
+  改前 `qaplat gate --layer smoke` 在 6 条 UI 用例全 error 的情况下报「门禁达标」，
+  改后报「门禁未达标」并给出违规明细。
+- **覆盖矩阵不再把平台自测当真实归属（`qaplat/registry.py`）**：`read_referenced_paths()`
+  对 `ROOT / "testcases" / "platform"` 前缀返回空元组（用 `Path.resolve()` 的
+  `in resolved.parents` 做组件级比较，避免误伤 `testcases/platform_extra/`），
+  `covers` marker 路径未动。此前 `testcases/platform/test_registry_coverage.py`
+  里作为**输入样本**的 `/api/v1/...` 字面量被读成真实归属，污染 6 个 operation 的明细。
+- **给 MES/UI 补 10 个真实调用的 `covers` 标注**：MES 与 UI 走 `apis/mes_api.py`
+  与 `testcases/mes/data_factory.py`，只写相对路径（`/work-orders/{order_no}/approve`），
+  `/api/v1` 前缀在 `base_url` 里，而提取器只认 `/api` 开头的字面量——15 个 GAP 里
+  10 个其实被真实调用。标注精确到**函数级装饰器**，不许整文件撒；标注前逐条做了
+  **运行时流量录制**验证（挂 `requests.Session.send`，AST 猜测探针会把
+  `DataFactory.work_order()` 与 `MesApi.work_order()` 同名混同，已因此剔除 3 条误列）。
+  覆盖率 `14/29 = 48.3%` → `24/29 = 82.8%`，剩 5 个 GAP 全仓确无调用者，如实留白。
+- **文档口径回填**：`README.md`、`CONTRIBUTING.md`、`docs/质量门禁策略.md`、
+  `docs/platform-usage.md`、`.github/workflows/test.yml` 的收集数与文件数按改后实测更新
+  （505 条收集 / 478 无编号；`ruff format` 139 files；`mypy` 109 source files）。
+  两个平台层新判据的说明写进 `docs/platform-usage.md` 新 §3.1/§3.2/§3.3 与 §4.3。
+
+---
+
 ## 2026-10-13
 
 ### 新增
