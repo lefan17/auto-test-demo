@@ -241,6 +241,7 @@ def test_work_orders_should_render_order_created_via_api(web, http_api):
     assert 'data-test="logout-button"' in body
 
 
+@pytest.mark.covers("get_work_order_api_v1_work_orders__order_no__get")
 def test_approve_should_transition_status_and_be_verifiable_via_api(web, http_api):
     """核心闭环：接口造数（PENDING）→ Web 审批 → 接口校验（APPROVED）。
 

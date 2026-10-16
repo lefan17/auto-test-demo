@@ -98,6 +98,7 @@ def _create_order(api: MesApi) -> tuple[str, str]:
 # --------------------------------------------------------------------------
 # 核心闭环
 # --------------------------------------------------------------------------
+@pytest.mark.covers("get_work_order_api_v1_work_orders__order_no__get")
 def test_api_seed_ui_approve_api_verify_should_close_the_loop(page, api, logged_in_orders):
     """核心闭环：接口造数（PENDING）→ UI 审批 → 接口校验（APPROVED + version 自增）。
 
@@ -135,6 +136,7 @@ def test_api_seed_ui_approve_api_verify_should_close_the_loop(page, api, logged_
     assert after_body["version"] == before_body["version"] + 1
 
 
+@pytest.mark.covers("get_work_order_api_v1_work_orders__order_no__get")
 def test_approve_should_only_affect_the_targeted_row(page, api, logged_in_orders):
     """行内定位必须精确：审批 A 单不能动到 B 单。
 

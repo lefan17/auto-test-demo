@@ -110,6 +110,7 @@ class TestIdempotency:
         same = [w for w in listed["items"] if w["order_no"] == order_no]
         assert len(same) == 1, f"幂等键没能阻止重复建单，库里出现了 {len(same)} 条 {order_no}"
 
+    @pytest.mark.covers("get_work_order_api_v1_work_orders__order_no__get")
     def test_same_key_different_payload_is_rejected_as_conflict(self, factory, mes, unique_tag):
         """同一个幂等键配不同的请求体：必须 409，而不是"帮你再执行一次"。
 
@@ -225,6 +226,10 @@ class TestIdempotency:
 
 # ==================== 乐观锁：防"后写覆盖先写" ====================
 class TestOptimisticLock:
+    @pytest.mark.covers(
+        "approve_work_order_api_v1_work_orders__order_no__approve_post",
+        "get_work_order_api_v1_work_orders__order_no__get",
+    )
     def test_stale_version_is_rejected_with_409(self, factory, mes):
         """拿着过期 version 提交：必须 409 VERSION_CONFLICT。
 
@@ -253,6 +258,10 @@ class TestOptimisticLock:
             f"被拒绝的请求不应改动数据：期望 version 停在 {stale_version + 1}，实际 {current['version']}"
         )
 
+    @pytest.mark.covers(
+        "approve_work_order_api_v1_work_orders__order_no__approve_post",
+        "get_work_order_api_v1_work_orders__order_no__get",
+    )
     def test_concurrent_approve_only_one_wins(self, factory, mes, race):
         """两个请求同时审核同一张工单：只能有一个成功，另一个必须 409。
 
@@ -291,6 +300,7 @@ class TestOptimisticLock:
 
 # ==================== 并发与库存：防"超卖" ====================
 class TestConcurrentInventory:
+    @pytest.mark.covers("list_stock_api_v1_inventory_stock_get")
     def test_concurrent_issue_never_oversells(self, factory, mes, race, take_material):
         """两个请求同时领同样的料：只能成功一次，另一次必须被库存守卫拒掉。
 
@@ -365,6 +375,7 @@ class TestConcurrentInventory:
         )
         assert ledger["total"] >= ok_count, f"成功领料 {ok_count} 次，但流水只有 {ledger['total']} 条"
 
+    @pytest.mark.covers("list_stock_api_v1_inventory_stock_get")
     def test_issue_beyond_stock_is_rejected_and_stock_unchanged(self, factory, mes, take_material):
         """领料超过可用库存：必须 400 INSUFFICIENT_STOCK，且库存一分不动。
 
@@ -397,6 +408,7 @@ class TestConcurrentInventory:
 
 # ==================== 账实一致：防"只改金额不改行数"的隐性错账 ====================
 class TestLedgerConsistency:
+    @pytest.mark.covers("list_stock_api_v1_inventory_stock_get")
     def test_ledger_balance_chain_matches_stock(self, factory, mes, take_material):
         """流水上记录的每一笔余额，必须能重放出"当时的真实账面"。
 
@@ -535,6 +547,10 @@ class TestPermissions:
 
 # ==================== 状态机：防"跳步"和"漏步" ====================
 class TestStateMachine:
+    @pytest.mark.covers(
+        "approve_work_order_api_v1_work_orders__order_no__approve_post",
+        "get_work_order_api_v1_work_orders__order_no__get",
+    )
     def test_approve_an_already_approved_order_is_rejected(self, factory, mes):
         """重复审核：必须 400 ILLEGAL_STATUS_TRANSITION。
 
@@ -551,6 +567,15 @@ class TestStateMachine:
         )
         mes.expect_error(resp, 400, "ILLEGAL_STATUS_TRANSITION")
 
+    @pytest.mark.covers(
+        "add_batch_api_v1_work_orders__order_no__batches_post",
+        "approve_work_order_api_v1_work_orders__order_no__approve_post",
+        "create_inspection_api_v1_work_orders__order_no__inspections_post",
+        "get_work_order_api_v1_work_orders__order_no__get",
+        "schedule_work_order_api_v1_work_orders__order_no__schedule_post",
+        "ship_work_order_api_v1_work_orders__order_no__ship_post",
+        "start_batch_api_v1_work_orders__order_no__batches__batch_no__start_post",
+    )
     def test_ship_completed_order_without_stock_in_is_rejected(self, factory, mes):
         """COMPLETED 但从未成品入库就发货：必须被 `_ensure_transition_guards` 拦下。
 
@@ -581,6 +606,15 @@ class TestStateMachine:
             f"拒单原因应指明缺少的是 stock_in，便于定位: {resp.text[:300]}"
         )
 
+    @pytest.mark.covers(
+        "add_batch_api_v1_work_orders__order_no__batches_post",
+        "approve_work_order_api_v1_work_orders__order_no__approve_post",
+        "create_inspection_api_v1_work_orders__order_no__inspections_post",
+        "get_work_order_api_v1_work_orders__order_no__get",
+        "schedule_work_order_api_v1_work_orders__order_no__schedule_post",
+        "start_batch_api_v1_work_orders__order_no__batches__batch_no__start_post",
+        "stock_in_api_v1_work_orders__order_no__stock_in_post",
+    )
     def test_complete_without_quality_pass_is_rejected(self, factory, mes):
         """质检未通过就完工入库：必须 400 QUALITY_GATE_FAILED。
 
@@ -596,6 +630,13 @@ class TestStateMachine:
         resp = factory.stock_in(order_no)
         mes.expect_error(resp, 400, "QUALITY_GATE_FAILED")
 
+    @pytest.mark.covers(
+        "add_batch_api_v1_work_orders__order_no__batches_post",
+        "approve_work_order_api_v1_work_orders__order_no__approve_post",
+        "get_work_order_api_v1_work_orders__order_no__get",
+        "schedule_work_order_api_v1_work_orders__order_no__schedule_post",
+        "start_batch_api_v1_work_orders__order_no__batches__batch_no__start_post",
+    )
     def test_report_beyond_planned_quantity_is_rejected(self, factory, mes):
         """报工数量超过计划数量：必须 400 REPORT_EXCEEDS_PLAN。
 
@@ -608,6 +649,11 @@ class TestStateMachine:
         resp = factory.report(order_no, batch_no, good="8.000")
         mes.expect_error(resp, 400, "REPORT_EXCEEDS_PLAN")
 
+    @pytest.mark.covers(
+        "add_batch_api_v1_work_orders__order_no__batches_post",
+        "approve_work_order_api_v1_work_orders__order_no__approve_post",
+        "get_work_order_api_v1_work_orders__order_no__get",
+    )
     def test_batch_quantity_beyond_plan_is_rejected(self, factory, mes):
         """排产批次数量超过工单计划量：必须被拒。
 

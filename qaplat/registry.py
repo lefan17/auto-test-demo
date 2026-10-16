@@ -36,6 +36,11 @@ _PATH_LITERAL_RE = re.compile(r"(?<![\w.])(/api[A-Za-z0-9_\-./{}]*)")
 #: 与 spec 里的 ``/api/v1/materials/{material_code}`` 能对上。
 _PLACEHOLDER_RE = re.compile(r"\{[^{}]*\}")
 
+#: 平台层自测目录（契约 §五）：这里出现的 ``/api...`` 字面量是喂给提取器的**输入样本**，
+#: 不是对被测服务的调用，因此不参与路径归属。注意用 Path 组件级前缀比较，而不是字符串
+#: ``startswith``——否则 ``testcases/platform_extra/`` 会被误伤。
+PLATFORM_SELF_TEST_DIR = ROOT / "testcases" / "platform"
+
 COVERAGE_JSON = CACHE_DIR / "registry.json"
 
 
@@ -95,8 +100,27 @@ def extract_paths_from_source(text: str) -> tuple[str, ...]:
     return tuple(sorted({normalize_path(match) for match in _PATH_LITERAL_RE.findall(text)}))
 
 
+def is_platform_self_test(file_path: str | Path) -> bool:
+    """该文件是否位于平台层自测目录下（契约 §五「自测排除」）。
+
+    用 ``Path.parents`` 做组件级比较，所以 ``testcases/platform_extra/x.py`` 不会被误判。
+    路径先 ``resolve()``，相对路径按当前工作目录（pytest 下即仓库根）解析。
+    """
+    try:
+        resolved = Path(file_path).resolve()
+    except OSError:
+        return False
+    return resolved == PLATFORM_SELF_TEST_DIR or PLATFORM_SELF_TEST_DIR in resolved.parents
+
+
 def read_referenced_paths(file_path: str | Path) -> tuple[str, ...]:
-    """读用例源码文件并提取路径字面量。读不到就返回空元组，不抛异常。"""
+    """读用例源码文件并提取路径字面量。读不到就返回空元组，不抛异常。
+
+    平台层自测目录下的文件一律返回空元组：那里的 ``/api...`` 字面量是喂给提取器的
+    输入样本，不是对被测服务的调用（契约 §五）。
+    """
+    if is_platform_self_test(file_path):
+        return ()
     try:
         text = Path(file_path).read_text(encoding="utf-8", errors="replace")
     except OSError:

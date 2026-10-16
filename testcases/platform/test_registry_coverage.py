@@ -113,6 +113,36 @@ def test_read_referenced_paths_on_missing_file_is_empty_not_fatal(tmp_path) -> N
     assert registry.read_referenced_paths(tmp_path / "nope.py") == ()
 
 
+def test_platform_self_test_files_claim_nothing_by_design() -> None:
+    """契约 §五：平台层自测目录下的文件一律返回空元组。
+
+    这里的 ``/api...`` 字面量是喂给提取器的输入样本，不是对被测服务的调用。
+    ``test_registry_coverage.py`` 自己就含二十多处字面量，是最能暴露回归的样本。
+    """
+    from qaplat.paths import ROOT
+
+    platform_dir = ROOT / "testcases" / "platform"
+    assert (platform_dir / "test_registry_coverage.py").read_text(encoding="utf-8").count("/api") > 0
+    for path in sorted(platform_dir.glob("test_*.py")):
+        assert registry.read_referenced_paths(path) == (), f"{path.name} 是平台自测，不该有路径归属"
+
+
+def test_platform_prefix_match_does_not_swallow_similar_directories(tmp_path) -> None:
+    """防误伤：``testcases/platform_extra/`` 只是名字像平台目录，必须照常提取。"""
+    src = tmp_path / "testcases" / "platform_extra" / "test_x.py"
+    src.parent.mkdir(parents=True)
+    src.write_text('X = "/api/v1/materials"\n', encoding="utf-8")
+    assert registry.read_referenced_paths(src) == ("/api/v1/materials",)
+
+
+def test_path_claim_still_works_outside_the_repo(tmp_path) -> None:
+    """反例：仓库外路径（临时目录）里的字面量照常提取，证明排除是前缀精确的。"""
+    src = tmp_path / "outside" / "test_y.py"
+    src.parent.mkdir(parents=True)
+    src.write_text('Y = "/api/v1/work-orders/{order_no}/ship"\n', encoding="utf-8")
+    assert registry.read_referenced_paths(src) == ("/api/v1/work-orders/{}/ship",)
+
+
 def test_api_layer_cases_have_no_source_claim_by_design() -> None:
     """已实测事实：testcases/api/** 全走 apis/ 封装对象，源码里没有 ``/api`` 字面量。
 

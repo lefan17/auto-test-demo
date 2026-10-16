@@ -10,6 +10,16 @@ pytestmark = [pytest.mark.mes, pytest.mark.api, pytest.mark.smoke]
 
 
 class TestMesSmoke:
+    @pytest.mark.covers(
+        "add_batch_api_v1_work_orders__order_no__batches_post",
+        "approve_work_order_api_v1_work_orders__order_no__approve_post",
+        "create_inspection_api_v1_work_orders__order_no__inspections_post",
+        "get_work_order_api_v1_work_orders__order_no__get",
+        "schedule_work_order_api_v1_work_orders__order_no__schedule_post",
+        "ship_work_order_api_v1_work_orders__order_no__ship_post",
+        "start_batch_api_v1_work_orders__order_no__batches__batch_no__start_post",
+        "stock_in_api_v1_work_orders__order_no__stock_in_post",
+    )
     def test_full_lifecycle_pending_to_shipped(self, factory, mes):
         """主流程贯通：待审核 → 已审核 → 已排产 → 生产中 → 已完工 → 已发货。
 
@@ -86,6 +96,7 @@ class TestMesSmoke:
         ):
             assert table in body["tables"], f"缺少表 {table}"
 
+    @pytest.mark.covers("me_api_v1_auth_me_get")
     def test_login_returns_role_and_token(self, mes):
         """登录契约：返回 token + 角色。
 
