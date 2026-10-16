@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # === 核心测试框架 ===
-pytest==8.3.3
-pytest-html==4.1.1
+pytest==9.1.1
+pytest-html==4.2.0
 allure-pytest==2.13.5
-pytest-xdist==3.6.1
-pytest-cov==6.0.0
+pytest-xdist==3.8.0
+pytest-cov==7.1.0
 
 # 重跑治理（flaky 用例与隔离区，见 docs/wave2-flaky-handoff.md）。
 # 只 pin 这一个直接依赖：它的元数据只声明 pytest!=8.2.2,>=8.2 与 packaging>=17.1
@@ -24,7 +24,7 @@ jsonschema==4.26.0
 
 # === UI 测试 ===
 playwright==1.63.0
-pytest-playwright==0.5.2
+pytest-playwright==0.10.0
 
 # === Mock 后端（testcases/mes/ 的业务全链路用例需要，见 mock_server/） ===
 # 放在同一个文件里，是为了让"一条 pip install 就能跑全部用例"成立。
