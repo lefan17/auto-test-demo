@@ -23,7 +23,7 @@ PyYAML==6.0.3
 jsonschema==4.26.0
 
 # === UI 测试 ===
-playwright==1.48.0
+playwright==1.63.0
 pytest-playwright==0.5.2
 
 # === Mock 后端（testcases/mes/ 的业务全链路用例需要，见 mock_server/） ===
