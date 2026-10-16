@@ -7,6 +7,10 @@
 与 **契约/缺陷探针测试**（自带一个故意带缺陷的登录服务），
 支持数据驱动、JSON Schema 契约校验、Allure 报告和 GitHub Actions 持续集成。
 
+> 本仓库的前身是已归档的 [`lefan17/software-testing-practice`](https://github.com/lefan17/software-testing-practice)
+> （契约驱动的接口自动化测试实践：Flask 被测系统 + OpenAPI 契约 + 27 条登录接口用例），
+> 它的内容已并入本仓库，此后只在这里维护。
+
 ## 技术栈
 
 | 用途 | 选型 |
