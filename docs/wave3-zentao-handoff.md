@@ -2,7 +2,7 @@
 
 > 基线：`0e61618`（波 2 收口）→ HEAD（4 条提交，纯新增 2017 行，见 §7）。
 > 全部实测在 Windows 11 + Python 3.12.10 + pytest 8.3.3 上完成，解释器
-> `C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`。
+> `C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`。
 > 本文里每个数字都附了产生它的原始命令；**实测 / 推断 / 未验证**三类已逐处标注。
 
 本轮的定位是**把已经在代码里、却只活在人眼里的「用例编号」变成一条可机读的链路**，
@@ -146,7 +146,7 @@ chosen = token_hits or hits
 （`n/a|fail|blocked|pass`），多塞一维就是伪造（`scripts/report_to_zentao.py:316` `_describe()`）：
 
 ```python
-bits = [f"auto-test-demo 自动上报：{outcome.outcome}"]
+bits = [f"fullstack-test-framework 自动上报：{outcome.outcome}"]
 if reruns:
     bits.append(f"重跑 {reruns} 次（JUnit XML 不表达 rerun，此数取自 reports/flaky-governance.json）")
 ```
@@ -487,7 +487,7 @@ LC-01→101、LC-06→{106, version 2} 的临时表；`ZENTAO_URL` 故意设成�
 待发送 2 条请求 → (dry-run，未读凭据)（认证头：Token <不回显>）
   POST /api.php/v1/testcases/101/results?testtask=0
        case_id=LC-01 nodeid=testcases/login/test_login_contract.py::test_lc01_login_success result=pass
-       body={"steps": [{"result": "pass", "real": "auto-test-demo 自动上报：passed；nodeid=testcases/login/test_login_contract.py::test_lc01_login_success"}]}
+       body={"steps": [{"result": "pass", "real": "fullstack-test-framework 自动上报：passed；nodeid=testcases/login/test_login_contract.py::test_lc01_login_success"}]}
   POST /api.php/v1/testcases/106/results?testtask=0&version=2
        case_id=LC-06 nodeid=...test_lc06_to_lc13_missing_fields_400[payload0-LC-06 缺全部字段] result=pass
 exit=0        # 无凭据、URL 打不通，dry-run 照样跑完 —— 它根本没联网

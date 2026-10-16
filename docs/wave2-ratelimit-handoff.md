@@ -12,7 +12,7 @@
 从 `4780655` 起**逐字节未变**，只有 `testcases/api/test_retry_after.py`
 在 `0187624` 里从 201 行改到 211 行。
 
-解释器固定为 `C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`，
+解释器固定为 `C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`，
 每次跑测试/静态检查前设：
 
 ```powershell

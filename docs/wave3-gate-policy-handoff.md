@@ -345,7 +345,7 @@ job 级豁免比 step 级更强（整条 job 的红都不算数），所以脚�
 ## 九、自检命令与原始输出
 
 ```powershell
-$py = 'C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe'
+$py = 'C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe'
 $env:PYTHONUTF8 = '1'
 cd C:\Users\lefan\DSH_project\接口自动化_3\work\int3
 ```

@@ -296,7 +296,7 @@ FAILED testcases/api/test_response_time.py::test_response_time_should_be_accepta
 
 ## 5. 自检命令与原始输出
 
-`$PY = C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`，
+`$PY = C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`，
 `PYTHONPATH=C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs`，workdir = 工作副本根。
 
 ### ① `& $PY -m ruff check .` → exit 0

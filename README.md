@@ -1,6 +1,6 @@
 # 接口 + UI + 业务全链路自动化测试框架
 
-[![Auto Test](https://github.com/lefan17/auto-test-demo/actions/workflows/test.yml/badge.svg)](https://github.com/lefan17/auto-test-demo/actions/workflows/test.yml)
+[![Auto Test](https://github.com/lefan17/fullstack-test-framework/actions/workflows/test.yml/badge.svg)](https://github.com/lefan17/fullstack-test-framework/actions/workflows/test.yml)
 
 基于 Python + pytest 的自动化测试框架，覆盖 **接口自动化**、**UI 自动化**、
 **带本地 Mock 后端的业务全链路测试**（状态机、乐观锁、幂等、并发竞态、Decimal 金额精度）

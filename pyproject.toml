@@ -12,7 +12,7 @@
 # pyproject 只承载"无法放在别处"的配置。
 
 [project]
-name = "auto-test-demo"
+name = "fullstack-test-framework"
 version = "0.1.0"
 description = "接口 + UI + 业务全链路自动化测试框架（pytest / requests / Playwright / Allure）"
 readme = "README.md"

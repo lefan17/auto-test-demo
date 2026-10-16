@@ -2,7 +2,7 @@
 
 基线 commit `691cb04`（`chore: mirror baseline from auto-test-demo@b8524c9`）。
 本文件里所有命令都在 `C:\Users\lefan\DSH_project\接口自动化_3\work\w1-auth` 下执行，
-解释器固定为 `C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`，
+解释器固定为 `C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`，
 每次跑测试/静态检查前设 `$env:PYTHONPATH='C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs'`。
 
 本次提交（4 条，均通过 `scripts/check_commit_msg.py`）。前三条的 SHA 稳定，可引：
@@ -367,7 +367,7 @@ exit=0
 既不动第三方类型定义、也不加 `# type: ignore`、也不骗过 lint。
 备选写法都被否决了 —— 直接赋值就是基线那两条错误，
 `setattr(response, "常量名", ...)` 被 ruff 的 `B010` 拦下
-（实测原仓库 `C:\Users\lefan\DSH_project\DH_1\auto-test-demo` 正是 setattr 写法，
+（实测原仓库 `C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework` 正是 setattr 写法，
 它 mypy 绿但 `ruff check` 报 2 条 B010 —— 两条路都走不通，所以选了 cast）。
 **`pyproject.toml` 的 overrides 段一行未改**，没有新增任何登记债。
 

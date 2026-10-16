@@ -1,8 +1,8 @@
 # 波 3 · P2-2 性能基线回归 —— 交接文档
 
 > 基线：`0e61618`（波 2 收口）
-> 工作副本：`C:\Users\lefan\DSH_project\接口自动化_3\work\w3-perf`（原仓库 `DH_1\auto-test-demo` 只读参考，未改动）
-> 解释器：`C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`（Python 3.12.10 / pytest 8.3.3 / requests 2.32.3）
+> 工作副本：`C:\Users\lefan\DSH_project\接口自动化_3\work\w3-perf`（原仓库 `DH_1\fullstack-test-framework` 只读参考，未改动）
+> 解释器：`C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`（Python 3.12.10 / pytest 8.3.3 / requests 2.32.3）
 > 每次跑 pytest/ruff/mypy 前的前置：
 > `$env:PYTHONPATH='C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs'`，`$env:TMP`/`$env:TEMP='C:\Users\lefan\DSH_project\接口自动化_3\work\_tmp'`
 > **本副本内没有 `.venv`**：`testcases/mes/mock_server_ctl.py:23` 的 `DEFAULT_PYTHON` 不存在，`MockServer.start()` 回落到 `sys.executable`，

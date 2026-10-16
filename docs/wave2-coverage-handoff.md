@@ -1,8 +1,8 @@
 # 波 2 · P1-3 覆盖率盲区（子进程服务） — 交接文档
 
 > 基线：`44fc60d`（波 1 收口：口令、契约与实测数字同步到 README 与 CHANGELOG）
-> 工作仓库：`C:\Users\lefan\DSH_project\接口自动化_3\work\w2-coverage`（原仓库 `DH_1\auto-test-demo` 只读参考，未改动）
-> 解释器：`C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`（Python 3.12.10，coverage 7.16.2 / pytest-cov 6.0.0）
+> 工作仓库：`C:\Users\lefan\DSH_project\接口自动化_3\work\w2-coverage`（原仓库 `DH_1\fullstack-test-framework` 只读参考，未改动）
+> 解释器：`C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`（Python 3.12.10，coverage 7.16.2 / pytest-cov 6.0.0）
 > 每次跑 pytest/ruff/mypy 前设：`$env:PYTHONPATH='C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs'`
 
 面向整合者。本文件只写证据：改了哪些文件、命令输出原文、未解决项。

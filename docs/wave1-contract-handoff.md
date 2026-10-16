@@ -4,7 +4,7 @@
 
 - 工作仓库：`C:\Users\lefan\DSH_project\接口自动化_3\work\w1-contract`
 - 基线 commit：`691cb04 chore: mirror baseline from auto-test-demo@b8524c9`
-- 解释器：`C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`（Python 3.12.10）
+- 解释器：`C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`（Python 3.12.10）
 - 每次跑 pytest/ruff/mypy 前设：`$env:PYTHONPATH='C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs'`
 
 ---
@@ -563,7 +563,7 @@ NOT_FOUND_FROM_BODY_REQUEST = frozenset(
 
 ### 10.4 收口后的验收实测（全部在**当前字节**上重跑）
 
-前置：每条命令前 `Remove-Item .hypothesis -Recurse -Force`；环境 `PYTHONPATH=<pylibs>`、`TMP/TEMP=<work>\_tmp`、`MAX_RESPONSE_MS=8000`；解释器 `C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`。
+前置：每条命令前 `Remove-Item .hypothesis -Recurse -Force`；环境 `PYTHONPATH=<pylibs>`、`TMP/TEMP=<work>\_tmp`、`MAX_RESPONSE_MS=8000`；解释器 `C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`。
 
 **验收 1 —— 默认样本量，连跑 3 次**
 ```
