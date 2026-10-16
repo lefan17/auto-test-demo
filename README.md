@@ -255,7 +255,7 @@ pytest --html=report.html --self-contained-html
 | 契约-自动导出 | 224 | 从 FastAPI 自动导出 `docs/openapi.json`（29 operation）并做漂移门禁；schemathesis 属性测试按 spec 生成请求 + 手写契约与自动导出的逐条对照。扫出 6 类真实契约缺陷：DEF-05/06 已修并由正常用例固化，DEF-01~04 共 11 条 `xfail(strict=True)` 钉住 |
 | 契约-登录 | 29 | 用 5 种设计方法推出的 30 条用例（等价类/边界值/判定表/场景法/错误推测），钉住被测服务当前行为并标注 6 个已知缺陷（FIND-01~06） |
 | UI-Demo Web / 混合链路 | 20 | 本地 Demo Web 的页面与接口断言 15 条（`test_mes_web_app.py`，不起浏览器）+ 页面操作与接口校验的混合链路 5 条（`test_mes_mixed_flow.py`，用浏览器） |
-| 平台层（qaplat 自测） | 99 | 门禁分层表达式、度量库、覆盖矩阵 registry、报表 CLI 等平台自身的用例（`testcases/platform/`） |
+| 平台层（qaplat 自测） | 105 | 门禁分层表达式、度量库、覆盖矩阵 registry、报表 CLI 等平台自身的用例（`testcases/platform/`） |
 | 数据隔离 | 会话级 1 项 | 会话结束时各表行数与关键数值列合计（库存可用/占用/已发料、流水数量与账面余额）必须回到基线，且流水余额链逐笔自洽（见下方"数据隔离"一节） |
 
 业务全链路那些用例**不依赖公网**：`testcases/mes/` 的 session 级 fixture 会自己
