@@ -81,7 +81,7 @@ class ExchangePlayer:
 
 ## 5. 运行环境（实测，别再试探）
 
-- 解释器：`C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`（Python 3.12.10）
+- 解释器：`C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`（Python 3.12.10）
 - `httpx` 需 `$env:PYTHONPATH='C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs'` 才可导入。
 - **mitmproxy 未安装**：`ProxyTap` 必须是懒加载接入点（函数内 import），
   模块顶层 import mitmproxy 会让本地链路直接崩。测试里用 monkeypatch 伪造。

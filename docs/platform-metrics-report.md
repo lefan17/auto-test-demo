@@ -12,7 +12,7 @@
 | 项 | 值 |
 | --- | --- |
 | HEAD | `a49b097` |
-| 解释器 | `C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`（Python 3.12.10） |
+| 解释器 | `C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`（Python 3.12.10） |
 | `PYTHONPATH` | `C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs`（**必须**，见第 1 节） |
 | 平台层自测 | 99 条，全绿 |
 | 用例总数 | 462 = 363 基线 + 99 平台层新增 |

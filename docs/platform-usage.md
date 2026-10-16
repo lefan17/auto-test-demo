@@ -28,7 +28,7 @@ chcp 65001 > $null
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $env:PYTHONPATH = 'C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs'
 cd C:\Users\lefan\DSH_project\接口自动化_3\work\auto-test-demo
-$py = 'C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe'
+$py = 'C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe'
 ```
 
 `qaplat` 包本身**不**设置也不硬编码 PYTHONPATH——那是环境的责任，藏在包里会让人以为

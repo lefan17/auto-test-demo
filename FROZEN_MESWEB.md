@@ -265,7 +265,7 @@ from testcases.ui.mes_web_ctl import MesWebServer  # 带包名（正确）
 ## 8. 必须交付的证据（缺一条即不算完成）
 
 命令一律在仓库根目录、Python 解释器
-`C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe` 下执行，
+`C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe` 下执行，
 环境变量 `PYTHONPATH=C:\Users\lefan\DSH_project\接口自动化_3\work\pylibs`、
 `TMP`/`TEMP=C:\Users\lefan\DSH_project\接口自动化_3\work\pw-tmp`。
 

@@ -46,7 +46,7 @@ $env:PYTHONIOENCODING="utf-8"
 解释器（本仓库根的 `.venv` 不存在，控制器会自动回落到 `sys.executable`）：
 
 ```
-C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe
+C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe
 ```
 
 ### 2.2 跑用例

@@ -190,7 +190,7 @@ def collect_cases(pytest_args: Sequence[str]) -> list[CaseInfo]: ...
 
 ## 七、运行环境（实测，别再试探）
 
-- 解释器：`C:\Users\lefan\DSH_project\DH_1\auto-test-demo\.venv\Scripts\python.exe`（3.12.10）
+- 解释器：`C:\Users\lefan\DSH_project\DH_1\fullstack-test-framework\.venv\Scripts\python.exe`（3.12.10）
 - 工作目录 `C:\Users\lefan\DSH_project\接口自动化_3\work\auto-test-demo`；沙箱只允许写本工作区之下。
 - PowerShell 中文输出需先 `chcp 65001` 并设 `[Console]::OutputEncoding=[Text.Encoding]::UTF8`。
 - 基线：`pytest --collect-only -q` = **363 tests collected**（HEAD `a49b097`，工作区干净）。
