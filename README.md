@@ -624,7 +624,7 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > `testcases/contract/test_schemathesis_properties.py` 的可执行语句从 171 条变成 172 条，
 > 分母跟着变成 7159（这一条是量出来的：`coverage.parser.PythonParser` 在两个提交上分别解析该文件）。
 > 本轮在 7159 这个分母上先后测了 16 次（前提是 `$env:TMP` 指向一个**确实存在**的可写目录——那里不可写时 pytest 的 basetemp 会回落到仓根，它生成的 .py 会被 `--cov=.` 算进分母），这一栏落在 1181–1191 之间，百分比稳定在 83%（其中两次显示 84%）。
-> 再往后，`qaplat/registry.py` 补采集失败判据（+15 条可执行语句）、`test_registry_coverage.py` 加 2 条自测（+13 条），分母 7159 → 7187（同样是 `coverage.parser.PythonParser` 量出来的）；在 7187 这个分母上串行测了 5 次（每次前清掉 `.coverage*` 分片，避免两次运行互相污染），这一栏落在 1179–1188，百分比 83%（5 次里 3 次显示 84%）。`-m api` 那一组在 7095 分母上串行测了 8 次，未覆盖恒为 2748、百分比恒为 61.27%。
+> 再往后，`qaplat/registry.py` 补采集失败判据（+15 条可执行语句）、`test_registry_coverage.py` 加 2 条自测（+13 条），分母 7159 → 7187（同样是 `coverage.parser.PythonParser` 量出来的）；在 7187 这个分母上串行测了 5 次（每次前清掉分片数据 `.coverage` 与 `.coverage.*`，避免两次运行互相污染；**不要**写成 `.coverage*` —— 那个通配符会连 `.coveragerc` 一起删掉），这一栏落在 1179–1188，百分比 83%（5 次里 3 次显示 84%）。`-m api` 那一组在 7095 分母上串行测了 8 次，未覆盖恒为 2748、百分比恒为 61.27%。
 > 逐文件比对两次运行，差异**全部**来自
 > `mock_server/services.py`（合流前 `359/74` ↔ `359/80`，合流后 `359/76` ↔ `359/78`）：
 > 该服务由 fixture 以常驻子进程拉起、收尾走 `terminate()`，落盘那一刻的行数
