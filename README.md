@@ -569,8 +569,8 @@ pytest -m mes -n 4 --dist loadfile        64 passed in 18.89s
 CONTRACT_MAX_EXAMPLES=50 pytest -m contract
                                          213 passed, 11 xfailed in 54.42s  # 放大 6.25 倍样例，耗时 ×2.9
 
-pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 7158 1192 83%
-pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 7066 2727 61%（61.41%）
+pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 7159 1181–1191 83%
+pytest -m api -n 4 ... --cov-fail-under=40                 TOTAL 7067 2726–2728 61%（61.40%–61.43%）
                                         Required test coverage of 40% reached（退出码 0）
 pytest -m mes --cov=mock_server --cov-report=term          TOTAL 1374 235 83%
 pytest -m login --cov=login_app --cov-report=term          TOTAL   88  13 85%
@@ -587,9 +587,9 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > 变化的是全量总数（380 → 499 → 505，含平台层 99 → 105 条；批次 2 的 173 条自带 `pytest.ini`，不进根收集数）、
 > 各行的 `deselected`（`--collect-only` 可复现），以及 `-m ui`（收集数 14 → 34 条）。
 > **覆盖率那两行已按合流后的代码重跑并改成了上面的新值**：`--cov=.` 的分母里多了 `qaplat/`（9 个模块）
-> 与 `mes_web/`（3 个模块），所以两组都掉了——`not ui` 88.89% → 83%，`api` 76.09% → 61.41%。
+> 与 `mes_web/`（3 个模块），所以两组都掉了——`not ui` 88.89% → 83%，`api` 76.09% → 61.4%。
 > 本轮又补了 `qaplat/gate.py` 的 error 预算判据与 `registry.py` 的平台自测排除，两行都按改后代码重跑：
-> 分母 7095 → 7158、7003 → 7066，未覆盖 1183 → 1192、2689 → 2727，**百分比不变**（83% / 61.41%）。
+> 分母 7095 → 7159、7003 → 7067，未覆盖 1183 → 1181–1191、2689 → 2726–2728，**百分比仍是 83% / 61%（61.4%）**。
 > 批次 2 的 28 个文件**不进**这个分母：它自带 rootdir、`--cov=.` 只覆盖根仓库，
 > 且它的 `analyze/` `recorder/` `replay/` 都没有 `__init__.py`（靠 `conftest.py` 插 `sys.path` 导入）。
 
@@ -609,7 +609,7 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > 早期本文件把同一批 error 归因成"沙箱禁止 asyncio 建命名管道（`_winapi.CreateNamedPipe`）"，
 > 那个归因不成立：那 19 条 error 逐条都能用"缺浏览器"复现，没有一条是那个原因。
 >
-> **覆盖率门禁挂在 `-m api` 上，而它现在有 61.41%，不是"全量"的 83%**：
+> **覆盖率门禁挂在 `-m api` 上，而它现在有 61.4%，不是"全量"的 83%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
 > "选取集完全相同"那句当时是对的，现在错了）。
 > 门禁仍定在 40：它要拦的是**退化**，不是卡住当前值。
@@ -618,7 +618,10 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > 560 / 562 / 551 / 558 / 556，对应覆盖率 88.89% / 88.85% / 89.07% / 88.93% / 88.97%
 > —— 真正在动的是这一栏数字，百分比只挪了 0.2pp。合流后分母变成 7095，
 > 这一栏在 1177 ~ 1183 之间跳（三次实测 1179 / 1177 / 1183，百分比一直是 83%）；
-> 本轮补完 qaplat 两处判据后分母是 7158、这一栏 1192，百分比仍是 83%。
+> 本轮补完 qaplat 两处判据后分母是 7158；随后契约测试适配 schemathesis 4.31，
+> `testcases/contract/test_schemathesis_properties.py` 的可执行语句从 171 条变成 172 条，
+> 分母跟着变成 7159（这一条是量出来的：`coverage.parser.PythonParser` 在两个提交上分别解析该文件）。
+> 本轮在 7159 这个分母上先后测了 16 次（前提是 `$env:TMP` 指向一个**确实存在**的可写目录——那里不可写时 pytest 的 basetemp 会回落到仓根，它生成的 .py 会被 `--cov=.` 算进分母），这一栏落在 1181–1191 之间，百分比稳定在 83%（其中两次显示 84%）。
 > 逐文件比对两次运行，差异**全部**来自
 > `mock_server/services.py`（合流前 `359/74` ↔ `359/80`，合流后 `359/76` ↔ `359/78`）：
 > 该服务由 fixture 以常驻子进程拉起、收尾走 `terminate()`，落盘那一刻的行数
