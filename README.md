@@ -16,6 +16,13 @@
 > （契约驱动的接口自动化测试实践：Flask 被测系统 + OpenAPI 契约 + 27 条登录接口用例），
 > 它的内容已并入本仓库，此后只在这里维护。
 
+> 🧭 **在作品集中的位置**：本仓库是这条测试 / 质量线的**起点**——先把接口、UI 与带本地 Mock
+> 后端的业务全链路自动化做扎实。往下的两段是
+> [perf-baseline-quality-gate](https://github.com/lefan17/perf-baseline-quality-gate)（性能与
+> 稳定性基线 + 12 条 CI 门禁规则，回答"变慢了没有、门禁拦不拦得住"）与
+> [agent-test-hub](https://github.com/lefan17/agent-test-hub)（LangGraph 编排的 Agent 自动测试，
+> 把执行与缺陷归因交给 LLM，失败降级为确定性 MockBrain）：**接口自动化 → 性能与质量门禁 → Agent 自动测试**。
+
 ### 目录
 
 - [技术栈](#技术栈)
