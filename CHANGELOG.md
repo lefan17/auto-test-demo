@@ -724,7 +724,7 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
   另 15 条（`test_mes_web_app.py`）走 HTTP 层、不申请 `page`。缺浏览器时那 19 条会在 setup
   阶段全 error，**属环境限制、非用例缺陷**；`python -m playwright install chromium` 会把
   该 rev 装到位（`tools/install_chromium.py` 也按 `--dry-run` 输出的真值代劳）。
-  装好后的实测：`-m ui` → `34 passed, 471 deselected`，全量 → `494 passed, 11 xfailed`。
+  装好后的实测：`-m ui` → `34 passed, 520 deselected`，全量 → `543 passed, 11 xfailed`。
   这条环境依赖**没有被任何守卫挡住**——换一台机器跑红了，先确认浏览器是否就位，
   再怀疑用例。（早期本文件把同一批 error 归因成「受限沙箱禁止 asyncio 建命名管道」，
   那个归因不成立：报错原文是 `Executable doesn't exist at …chromium_headless_shell-1243`。）
