@@ -104,6 +104,54 @@ jobs:
       - name: mypy（静态类型检查）
         run: python -m mypy
 
+  # ---------------------------------------------------------------------------
+  # Windows 回归（本轮新增）：整条流水线此前 8 个 job 全是 ubuntu-latest，
+  # 而这个仓库的开发痕迹全是 Windows——`setup.ps1`、`perf/run_load.ps1`、
+  # 文档清一色 PowerShell、`tools/install_chromium.py` 走 `%LOCALAPPDATA%`。
+  # 路径分隔符、事件循环策略、`CTRL_BREAK_EVENT`、控制台编码这些差异
+  # 只在 Windows 上才暴露，此前只能靠人本地撞。
+  #
+  # 只跑 lint + typecheck + `-m api`：不装浏览器、不跑 UI，把分钟数压在 20 以内。
+  # 不设 continue-on-error：它的全部价值就是拦住 Windows 专属红，
+  # 放行了就等于白跑一条 job。
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # 装完整依赖：`-m api` 那一步要 import 仓内 apis / mock_server / common，
+      # 只装 ruff 与 mypy 会在收集期就 ImportError。版本写死与 lint / typecheck 一致。
+      - name: 安装依赖与检查工具
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "ruff==0.16.10" "mypy==2.4.0"
+
+      - name: ruff check（lint 规则）
+        run: ruff check .
+
+      - name: ruff format --check（格式规范）
+        run: ruff format --check .
+
+      - name: mypy（静态类型检查）
+        run: python -m mypy
+
+      # 只跑 api 层：契约要起本地服务并钉样例数、mes/login 已经在 ubuntu 上覆盖，
+      # UI 要浏览器。api 这一组同时含公网用例，MAX_RESPONSE_MS 与 ubuntu 那份一致。
+      - name: 运行接口自动化（Windows 专属回归）
+        run: python -m pytest -m api -q
+        env:
+          MAX_RESPONSE_MS: "8000"
+
   test:
     runs-on: ubuntu-latest
     # 上限 45 分钟。串行跑完四组用例 + 装 Playwright + 生成 Allure 报告，
@@ -252,26 +300,36 @@ jobs:
         run: |
           pytest -m api -n 4 --dist loadfile \
             --cov=. --cov-report=term --cov-report= \
-            --cov-fail-under=40 \
+            --cov-fail-under=54 \
             --alluredir=allure-results
         env:
           # CI 网络比本地慢，阈值放宽，避免误报
           # （实测 GitHub runner 连 jsonplaceholder 常在 2-4 秒波动）
           MAX_RESPONSE_MS: "8000"
 
-      # 覆盖率门禁的数字来源：本机实测这一条命令 → **78.87%**
-      # （3985 statements / 842 miss，TOTAL 79%）。门禁取 40，留足余量。
+      # 覆盖率门禁的数字来源：本机在这条命令上**串行实测 3 次**，
+      # 三次完全相同 → `TOTAL 8041 3460 57%`（56.97%）。门禁取 54，留约 3pp 余量。
+      #
+      # ⚠️ 阈值是量出来的，不是拍的，也不能沿用历史推算值：
+      #   - 本文件早前记的 78.87% / 88.90% 是更早树状态的实测，早就作废。
+      #   - 36c1cc5 那棵树上是 61.27%（分母 7095 / 未覆盖 2748）。
+      #   - 现在同一命令是 56.97%（分母 8041 / 未覆盖 3460）。`--cov=.` 把仓库
+      #     **全文**算进分母，而 `-m api` 只跑接口那 132 条，摸不到新增文件。
+      #   - 分母涨的这 946 条里，能逐文件对上的是 36c1cc5..HEAD 新增的 5 个 .py
+      #     （`coverage.parser.PythonParser` 量出 626 条）+ `tools/install_chromium.py`
+      #     的 +5；**剩下 315 条我没能逐文件对上**，不编造原因。
+      #   - 无论那 315 条是什么，结论不变：拿 61.27% 时代的口径写 58 会让这一步
+      #     当场红。按当前实测 56.97% 留约 3pp 余量，取 54。
       #
       # 为什么不贴着实测值设：这个数字里有相当一部分来自公网接口用例本身，
       # 在 runner 上会抖动；门禁的意义是"拦住覆盖率**退化**"，不是"卡住当前值"。
       # 设成贴着实测值，任何一次无害的重构都会让它变红，然后就会有人来调低它——
       # 门禁一旦被调过一次，就不再有人相信它了。
       #
-      # 注意：同一份代码全量跑（`-m "not ui" --cov=.`）是 **88.90%**
-      # （4055/450），比这一组高出一截。差额来自契约那 224 条用例，
-      # 它们在**上面那一步**就跑完了。门禁挂在这一组而不是全量上，是因为
-      # 全量要再跑一次契约（约 21 秒）才凑得出同一份覆盖数据，
-      # 而门禁要拦的是"这一组用例还测不测得住"。
+      # 注意：同一份代码全量跑（`-m "not ui" --cov=.`）比这一组高出一截，
+      # 差额来自契约那 224 条用例——它们在**上面那一步**就跑完了。
+      # 门禁挂在这一组而不是全量上，是因为全量要再跑一次契约（约 21 秒）
+      # 才凑得出同一份覆盖数据，而门禁要拦的是"这一组用例还测不测得住"。
       #
       # ⚠️ 关于 `mock_server/*` 的覆盖率（波 2 · P1-3 已修，见 docs/wave2-coverage-handoff.md）：
       #
@@ -353,6 +411,26 @@ jobs:
       - name: 运行 qaplat 平台层自测（平台自身，独立于宿主层，失败即阻塞）
         run: pytest -m platform --alluredir=allure-results
 
+      # qaplat 门禁真正跑一次（本轮新增）：在这之前 workflow 里对 qaplat 的调用
+      # 只有 pages job 的 `registry build` / `drift record` / `report`，
+      # `gate --layer` **一次都没出现过**——于是度量库在 CI 上永远是空的，
+      # 而报表页（`runs.html` / `attribution.html`）正是靠 gate 落库的轮次记录。
+      # 「写在文档里、CI 从不执行」和「没跑成当通过」是同一类假绿，只是它骗的是
+      # 读报表的人。这一步就是为了让它真的跑起来。
+      #
+      # 为什么是 pr 层而不是 smoke：pr 层表达式是 `smoke or api or platform`，
+      # 这才是「合并请求该拦住什么」的语义；smoke 只有 36 条，是提交前的快速信号。
+      # 两层都由 `qaplat/gate.py` 的 LAYERS 固定，不接受自创表达式。
+      #
+      # 不设 continue-on-error：它就是判定步骤，红了说明门禁自己判不过。
+      #
+      # ⚠️ 如实登记一处已知冲突：pr 层表达式里的 `smoke` 含 6 条 UI 用例
+      # （`testcases/ui/test_login.py`，打公网 saucedemo.com），而本文件上面
+      # 「运行 UI 自动化」那一步是 continue-on-error 的，理由正是公网站点不可控。
+      # 也就是说这一步把它重新变成阻塞的。这一步是按要求接入的，冲突留给策略层决策。
+      - name: qaplat 门禁（pr 层，跑 smoke or api or platform 并落库）
+        run: python -m qaplat.cli gate --layer pr
+
       # ---------------------------------------------------------------------
       # 用例编号 → nodeid 的索引与禅道上报（波 3 · P2-1 新增）
       # ---------------------------------------------------------------------
@@ -386,6 +464,14 @@ jobs:
       # 也不设 continue-on-error：它是判定步骤，红了就是重试语义真的坏了。
       - name: 重试与代理回退离线自检（23 条断言）
         run: python tools/check_retry.py
+
+      # 依赖清单一致性：`requirements.txt`（人写的直接依赖）必须与
+      # `requirements.lock`（pip-compile 编译出的全量钉死清单）逐条对得上。
+      # 编译是手工跑的，仓库里本来没有任何机制校验两者还同步——最糟的组合是
+      # 「CI 装 lock 全绿，而 README 给新同事的第一条命令装的是另一套版本」。
+      # 纯文本对账、不联网、秒级；不设 continue-on-error：分叉了就是真分叉了。
+      - name: 依赖清单一致性自检（requirements.txt ↔ requirements.lock）
+        run: python scripts/check_deps_sync.py
 
       # ---------------------------------------------------------------------
       # flaky 治理账本（波 2 新增）

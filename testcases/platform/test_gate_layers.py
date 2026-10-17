@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from qaplat import cli, gate
@@ -231,3 +233,53 @@ def test_cli_without_command_prints_help_and_returns_usage_error() -> None:
 
 def test_cli_subcommand_group_without_child_returns_zero() -> None:
     assert cli.main(["registry"]) == 0
+
+
+# -------------------------------------------------- run_layer 的子进程真路径
+
+
+def test_run_layer_really_spawns_pytest_and_reads_the_dump(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """真跑一次 pytest 子进程，把 ``run_layer`` 的整条实现走通。
+
+    为什么必须有这条：上面两条 CLI 用例都把 ``gate.run_layer`` **整个替换成**
+    一个 lambda，于是 ``qaplat/gate.py`` 里那条子进程路径——
+    拼命令行 → ``subprocess.run`` → 读 ``--qaplat-dump`` 产物 → 解析 cases/counts——
+    在本文件里**一次都没有被执行过**。门禁是唯一会阻断流水线的部件，
+    它最脏的那一段却是纯靠读代码相信的。这条用例把那段变成可证伪的。
+
+    只 monkeypatch 了 dump 落点（``RAW_DUMP_DIR``），避免污染真实的
+    ``qaplat/.cache/raw/smoke.json``；``run_layer`` 本身一个字都不换。
+    """
+    monkeypatch.setattr(gate, "RAW_DUMP_DIR", tmp_path / "raw")
+    spec = gate.LayerSpec(
+        layer=Layer.SMOKE,
+        marker_expr="platform",
+        timeout_seconds=120,
+        min_pass_rate=1.0,
+        max_duration_seconds=120,
+        max_errors=0,
+    )
+
+    run = gate.run_layer(
+        spec,
+        [
+            "testcases/platform/test_gate_layers.py::test_four_layers_are_registered",
+            "-o",
+            "addopts=",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+        ],
+    )
+
+    # 1) 子进程真的跑成了
+    assert run.exit_code == 0
+    # 2) 计数来自 dump 的 cases，而不是「没解析出东西所以全 0」
+    assert run.counts["passed"] >= 1
+    assert run.counts["total"] >= 1
+    # 3) cases 逐条读出来了，且确实是刚才那条用例
+    assert run.cases
+    assert any("test_four_layers_are_registered" in nodeid for nodeid, _outcome, _duration in run.cases)
+    # 4) dump 里另两样也在：markers 与 files 都按 nodeid 落了
+    assert run.markers
+    assert run.files
