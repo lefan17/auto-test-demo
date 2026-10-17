@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import zipfile
@@ -29,26 +30,35 @@ pytestmark = pytest.mark.platform
 
 # 真实的 `--dry-run` 输出形状：先一段 bootstrap（没有 `(playwright ... vNNN)` 头），
 # 再逐个浏览器给「头 + Install location + Download url」。
+#
+# 分隔符必须跟着**运行平台**走：脚本把 ``Install location`` 那串原样交给 ``Path()``，
+# 在 Linux 上 ``Path("/tmp/x\\chromium-1155")`` 是一个整体文件名（反斜杠不是分隔符），
+# 所以拼死 Windows 反斜杠会让这条用例只在 Windows 上绿 —— CI 是 ubuntu，实测红过。
+def _sep() -> str:
+    return "\\" if os.name == "nt" else "/"
+
+
 def _dry_run_text(root: str) -> str:
     """按给定缓存根目录拼一段 `--dry-run` 输出。``root`` 用真实 tmp_path 才能验证解压落点。"""
+    sep = _sep()
     return (
         "bootstrap 1155\n"
-        f"  Install location:    {root}\\bootstrap-1155\n"
+        f"  Install location:    {root}{sep}bootstrap-1155\n"
         "  Download url:        https://cdn.example/playwright/builds/ffmpeg/1155/ffmpeg-win64.zip\n"
         "\n"
         "Chrome for Testing 133.0.6943.16 (playwright chromium v1155)\n"
-        f"  Install location:    {root}\\chromium-1155\n"
+        f"  Install location:    {root}{sep}chromium-1155\n"
         "  Download url:        https://cdn.example/playwright/builds/chromium/1155/chromium-win64.zip\n"
         "  Download fallback 1: https://mirror.example/chromium-win64.zip\n"
         "\n"
         "Chrome Headless Shell 133.0.6943.16 (playwright chromium-headless-shell v1155)\n"
-        f"  Install location:    {root}\\chromium_headless_shell-1155\n"
+        f"  Install location:    {root}{sep}chromium_headless_shell-1155\n"
         "  Download url:        https://cdn.example/playwright/builds/chromium/1155/"
         "chromium-headless-shell-win64.zip\n"
     )
 
 
-DRY_RUN_TEXT = _dry_run_text("C:\\Users\\u\\AppData\\Local\\ms-playwright")
+DRY_RUN_TEXT = _dry_run_text(f"C:{_sep()}Users{_sep()}u{_sep()}AppData{_sep()}Local{_sep()}ms-playwright")
 
 
 def _patch_run(
