@@ -78,6 +78,14 @@ def dry_run() -> list[dict[str, str]]:
             current["location"] = stripped.split(":", 1)[1].strip()
         elif stripped.startswith("Download url:"):
             current["url"] = stripped.split(":", 1)[1].strip()
+    if not entries:
+        # 退出码 0 却一条都没解析出来，只可能是上游改了输出格式（HEADER_RE 失配）。
+        # 原来这里直接返回空列表，main() 于是只给一个裸的 exit 1 —— 用的人分不清是
+        # 没装 Playwright、断网，还是格式变了。把原始输出贴出来才可能自查。
+        print("[错误] playwright --dry-run 退出码 0，但输出里没解析到任何 (playwright <名字> v<版本>) 头。")
+        print("多半是 Playwright 改了 --dry-run 的输出格式，需要同步更新 HEADER_RE 与字段前缀。")
+        print("--dry-run 的实际输出：")
+        print(proc.stdout.strip() or "（空）")
     return entries
 
 
