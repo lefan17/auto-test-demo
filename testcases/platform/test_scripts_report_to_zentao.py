@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -31,6 +32,21 @@ pytestmark = pytest.mark.platform
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "report_to_zentao.py"
+
+
+def _child_env() -> dict[str, str]:
+    """起子进程用的环境：钉住 ``PYTHONIOENCODING=utf-8``。
+
+    子进程的 stderr 走管道，默认按**本机 locale** 编码（Windows 中文是 cp936），
+    这里钉成 utf-8，下面按 ``encoding="utf-8"`` **严格**解码才成立。
+    否则中文路径会被 GBK 写成另一串字节，UTF-8 解码出 ``\\ufffd``，
+    于是断言失败看起来像「路径不对」，实际是「两边编码不一致」。
+    与 ``testcases/api/test_flaky_governance_meta.py:45-48``、
+    ``testcases/mes/test_data_lifecycle.py:47-48`` 的写法一致。
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def _load_module() -> ModuleType:
@@ -289,7 +305,7 @@ def test_missing_input_file_exits_1(tmp_path: Path, network_spy: list[Any]) -> N
         capture_output=True,
         text=True,
         encoding="utf-8",
-        errors="replace",
+        env=_child_env(),
         cwd=REPO_ROOT,
     )
     assert proc.returncode == 1, f"文档承诺输入缺失退出码 1，实测 {proc.returncode}：{proc.stderr}"
@@ -320,7 +336,7 @@ def test_unparseable_json_input_exits_1(tmp_path: Path, network_spy: list[Any]) 
         capture_output=True,
         text=True,
         encoding="utf-8",
-        errors="replace",
+        env=_child_env(),
         cwd=REPO_ROOT,
     )
     assert proc.returncode == 1, f"坏 JSON 的退出码应当仍是 1，实测 {proc.returncode}：{proc.stderr}"

@@ -20,7 +20,7 @@ pip install -r requirements.txt
 playwright install chromium
 
 # 4. 跑一遍确认环境是好的
-pytest -m "not ui" -q          # 期望 462 passed, 11 xfailed（共收集 473 条）
+pytest -m "not ui" -q          # 期望 509 passed, 11 xfailed（`-m "not ui"` 收集 520 条，全仓 554 条）
 ```
 
 `setup.ps1` 把这四步包成了一个脚本，新机器上可以直接跑它。
