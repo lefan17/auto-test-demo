@@ -71,12 +71,11 @@ def _force_utf8_stdio() -> None:
         UnicodeEncodeError: 'gbk' codec can't encode character '\\u2194'
     也就是这个检查在 Windows 上**还没开始比对就先崩了**。
 
-    pytest 的捕获对象例外：它是 TextIOWrapper 子类，`reconfigure` 存在但重配会打断
-    capsys 读取，而这些对象本身已经是 UTF-8。
+    对 pytest 的 capsys 也安全：那里 `sys.stdout` 是 `_pytest.capture.EncodedFile`，
+    实测它有 `reconfigure` 且调用成功（编码本来就是 utf-8）；其余不可重配置的对象
+    由下面的 try 兜住。
     """
     for stream in (sys.stdout, sys.stderr):
-        if type(stream).__module__.split(".")[0] == "_pytest":
-            continue
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             try:
