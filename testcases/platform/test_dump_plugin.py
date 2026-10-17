@@ -32,6 +32,10 @@ from qaplat import _dump, gate
 pytestmark = pytest.mark.platform
 
 
+#: 替身 nodeid。真钩子会同时写入「当前正在跑的这条用例」，所以判定只认这一个 key。
+_FAKE_NODEID = "testcases/x.py::test_a"
+
+
 class _Report:
     """够用的 pytest report 替身：只带 ``_dump.py`` 真正读的那几个属性。"""
 
@@ -39,7 +43,7 @@ class _Report:
         self,
         *,
         when: str,
-        nodeid: str = "testcases/x.py::test_a",
+        nodeid: str = _FAKE_NODEID,
         failed: bool = False,
         skipped: bool = False,
         duration: float = 0.0,
@@ -59,22 +63,32 @@ class _Report:
 
 @pytest.fixture(autouse=True)
 def _clean_state() -> Any:
-    """每个用例前清空插件的全局状态，避免 records 在用例之间串味。"""
-    _dump._STATE["records"] = {}
-    _dump._STATE["markers"] = {}
-    _dump._STATE["files"] = {}
-    _dump._STATE["covers"] = {}
-    _dump._STATE["dump"] = None
+    """每个用例前后都把插件的全局状态还原，不只是清空。
+
+    这里**不能**只清空：``qaplat gate`` 用 ``-p qaplat._dump`` 真实加载这个插件，
+    于是本文件的每一条用例都会经过真钩子。只清空不还原的后果是 ``_finish()`` 把
+    ``_STATE["dump"]`` 指向 tmp_path 之后就永久丢了外层那次门禁的落盘路径——实测
+    ``pr.json`` 根本不生成，门禁退化成汇总行兜底，且本文件 12 条用例连环全红。
+    """
+    saved = {key: (value.copy() if isinstance(value, dict) else value) for key, value in _dump._STATE.items()}
+    _dump._STATE.update({"dump": None, "records": {}, "markers": {}, "files": {}, "covers": {}})
     yield
-    _dump._STATE["records"] = {}
+    _dump._STATE.clear()
+    _dump._STATE.update(saved)
 
 
 def _outcome_of(*reports: _Report) -> str:
+    """把三个阶段交给真钩子，取回替身 nodeid 的结论。
+
+    断言**不数** ``len(records)``：在 ``-p qaplat._dump`` 下，真钩子会把当前这条
+    测试自己也写进 ``_STATE``，条数恒为 2——按条数断言会让本文件在被门禁加载时全红
+    （上一轮就是这么红的），而它要证明的事跟「有几条记录」无关。
+    """
     for report in reports:
         _dump.pytest_runtest_logreport(report)
     records = _dump._STATE["records"]
-    assert len(records) == 1, "一个 nodeid 的三个阶段必须压成一条记录"
-    return str(next(iter(records.values()))["outcome"])
+    assert _FAKE_NODEID in records, "替身 nodeid 没有产生记录"
+    return str(records[_FAKE_NODEID]["outcome"])
 
 
 # ------------------------------------------------------------------ 四条分类分支
@@ -140,7 +154,7 @@ def test_durations_of_all_phases_are_summed() -> None:
         _Report(when="call", duration=1.5),
         _Report(when="teardown", duration=0.75),
     )
-    assert next(iter(_dump._STATE["records"].values()))["duration_seconds"] == pytest.approx(2.5)
+    assert _dump._STATE["records"][_FAKE_NODEID]["duration_seconds"] == pytest.approx(2.5)
 
 
 def test_message_keeps_first_failure_and_is_capped() -> None:
@@ -154,14 +168,14 @@ def test_message_keeps_first_failure_and_is_capped() -> None:
         _Report(when="setup", failed=True, longreprtext=long_text),
         _Report(when="teardown", failed=True, longreprtext="E   later noise"),
     )
-    message = str(next(iter(_dump._STATE["records"].values()))["message"])
+    message = str(_dump._STATE["records"][_FAKE_NODEID]["message"])
     assert message.startswith("E   AssertionError")
     assert len(message) == 2000, "必须截断到 2000 字符：不截断会让 dump 大到没法看"
 
 
 def test_passing_case_keeps_empty_message() -> None:
     _outcome_of(_Report(when="setup"), _Report(when="call"), _Report(when="teardown"))
-    assert next(iter(_dump._STATE["records"].values()))["message"] == ""
+    assert _dump._STATE["records"][_FAKE_NODEID]["message"] == ""
 
 
 # ------------------------------------------------------------------ 落盘与跳过

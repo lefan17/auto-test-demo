@@ -807,6 +807,40 @@ mypy 114 → **115 source files**）、`CONTRIBUTING.md`（默认档 520 → **5
 `docs/platform-usage.md` / `docs/platform-metrics-report.md` / `docs/wave3-gate-policy-handoff.md` /
 `docs/质量门禁策略.md`（554 → **571**、154 → **171**）。
 
+**（4）上面的 17 条守卫自己先红了一次，而且是在 CI 上。**
+
+提交 `f8116c1` 之后 `test` job 的 `qaplat gate --layer pr` 报
+`total=309 passed=297 failed=12 errors=0`——那 12 条**全是刚新增的
+`testcases/platform/test_dump_plugin.py` 用例**，而同一个 commit 里
+`pytest -m platform` 是 171 条全绿。两个跑法差别只有一处：门禁通过
+`qaplat/gate.py:150` 的 `-p qaplat._dump` **真实加载了被测试的这个插件**。
+
+两个后果：
+
+- `_outcome_of()` 里的 `assert len(records) == 1` 恒为 2：真钩子把「当前正在跑的
+  这条用例自己」也写进了 `_STATE["records"]`，我手工注入的替身记录与它并存。
+- 更严重的是落盘路径被吃掉：autouse fixture `_clean_state` 原来只**清空**
+  `_STATE`、退出时不还原，`_finish()` 把 `_STATE["dump"]` 指向 tmp_path 之后，
+  外层那次门禁的落盘路径就永久丢了 → `qaplat/.cache/raw/pr.json` **根本不生成**，
+  门禁退化成 `gate.py:159 parse_summary_line()` 的汇总行兜底（拿不到用例级明细）。
+
+修法（只改 `testcases/platform/test_dump_plugin.py`）：
+
+- `_clean_state` 改为**进入时快照 `_STATE` 五项、退出时 `clear()` 后 `update()` 还原**。
+  清空对「用完就丢」够了，对「用完要还回去」不够——这正是被踩到的差别。
+- `_outcome_of()` 不再数条数，改为断言 `_FAKE_NODEID in records`（模块级常量
+  `_FAKE_NODEID = "testcases/x.py::test_a"`，同时作为 `_Report` 的默认 nodeid），
+  并按 key 取结论。它要证明的是「分类对不对」，与此刻记录里有几条无关。
+
+**可证伪**：修复前 `python -m qaplat.cli gate --layer pr` → `passed=297 failed=12`、
+`pr.json` 不存在；修复后 → `total=309 passed=309 failed=0 errors=0`、`门禁达标：pr`、
+`pr.json` 里 `cases=309` 且无 error/failed。归因唯一：把 `_clean_state` 的还原部分
+改成只清空，两个症状同时回来。
+
+**这一条记下来的理由**：守卫代码在**错误的执行方式下**可以不绿，而当时的
+`-m platform` 全绿恰恰是「没用门禁那个跑法跑」的结果。测插件的东西必须
+在插件真的被加载时也成立。
+
 ---
 
 ## 2026-10-13
