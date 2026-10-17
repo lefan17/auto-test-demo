@@ -339,13 +339,19 @@ $env:TEST_ENV = "prod";    pytest -m api     # → data/config.prod.yaml
 > 于是"A worker 的收尾快照"对不上"B worker 造的脏数据"。
 > 按文件分发（`loadfile`）让一个文件整体落在同一个 worker，作用域闭合，因而干净。
 >
-> ⚠️ **如实登记**：那个 1 error 在现在的用例集下**复现不出来了**
-> （`-m mes -n 4 --dist load` 四次实测 54 passed、退出码 0，13.34~16.57s）。
-> 而 `testcases/mes/` 里与数据隔离、并发相关的文件相对改造前**一个字节都没改**——
-> 也就是说不是被修好的，是分发格局变了之后自己消失了。
-> 复现不出来不等于修好了，所以这一组仍然只开 `loadfile`。
+> ⚠️ **订正一条旧登记**：早前这里写过「那个 1 error 在现在的用例集下复现不出来了」。
+> 2026-10-17 复测是 **1/4 通过**（三次 `64 passed, 1 error`、退出码 1），
+> 所以那句结论作废——不是消失了，是那四次运气好。
+> 最小复现：`pytest -k test_permission_matrix -n 7 --dist load` →
+> `ERROR at teardown of ...test_permission_matrix[生产领料]`，
+> 断言原文是「库存可用量合计: 基线 3270.000 -> 现在 3268.000（差 -2.000）」
+> 「已发料合计: 基线 0.000 -> 现在 2.000（差 +2.000）」。
+> 根因也坐实了，而且正是上面那段的机制：`PERMISSION_MATRIX` 里「生产领料」扣 2.000、
+> 「退料」补 2.000，两行**靠彼此抵消**才回到基线；`--dist load` 把它们分到两个 worker，
+> 而 `mes_server` 是 session 作用域 = 每个 worker 各起一个独立 mock server、各建一份 SQLite，
+> 于是两边都不自洽。注意行数一条不差，只有库存两个合计偏——所以别用"脏数据没清"去解释它。
 >
-> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测串行 61.68s → 并行 20.93s，约 2.9×），
+> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测串行 85.23s → 并行 39.03s，约 2.2×），
 > 而 `-m mes` / `-m login` / `-m ui` **刻意不开**，理由见"持续集成"一节。
 
 ### 口令与密钥
@@ -1053,21 +1059,21 @@ qaplat 平台的 5 页 HTML 报表除了进 Artifacts，还会被 `pages` job �
 
 ### 并行、超时、定时与通知
 
-- **`-m api` 开 `-n 4 --dist loadfile`**（实测串行 61.68s → 并行 20.93s，约 2.9×）。
+- **`-m api` 开 `-n 4 --dist loadfile`**（实测串行 85.23s → 并行 39.03s，约 2.2×）。
   必须是 `loadfile`：默认的 `--dist load` 在改造前实测 `-m mes` → `30 passed, 1 error`（退出码 1），
-  根因见上方"关于 `-n` 并行"（那个失败现已复现不出来，但仍不开）。
+  根因见上方"关于 `-n` 并行"。**注意那个失败并没有消失**——2026-10-17 复测是 1/4 通过，理由同上。
 - **`-m mes` / `-m login` / `-m ui` 刻意不开并行**，理由都基于实测：
-  ①`-m mes -n 4 --dist loadfile` 只快 1.26 倍（16.54s vs 串行 20.88s），收益太小——
+  ①`-m mes -n 4 --dist loadfile` 只快约 1.75 倍（24.44s vs 串行 43.65s），收益太小——
   实测只摊到 6 个测试文件，而每个 worker 都要付一次"造一个独立 SQLite + 起一个 mock_server 子进程"
   的启动成本，把能省的都吃掉了；
   ②这组用例里有**真实线程交叠**的竞态断言（`testcases/mes/concurrency.py` 的
   `assert_requests_overlapped`，靠 `threading.Barrier` 让请求同时在途），
   把机器塞满并行 worker 会拉长每个请求的墙钟、让交叠判据的边界变窄——
-  虽然实测在 loadfile 下仍绿（`-n 8` 连跑 3 次 54 passed，17.88~18.03s），但在它自己该守的那一步上，
-  用 4 秒换一份不确定性，不划算。
+  虽然实测在 loadfile 下仍绿（`-n 8` 连跑 3 次 64 passed，23.19~25.67s），但在它自己该守的那一步上，
+  用 20 秒换一份不确定性，不划算。
   **一句话：能不省的地方就不省——性能门禁和并发断言的价值全在于它说了实话。**
 - **每个 job 都有 `timeout-minutes`**：一个卡死的 job 不设上限会占满默认的 360 分钟，
-  把并发名额全部堵住。现在是 lint 10 / typecheck 15 / test 45 / security 15 / pre-commit 15 / commit-convention 10 / perf 20 / pages 20。
+  把并发名额全部堵住。现在是 lint 10 / typecheck 15 / windows 20 / test 45 / security 15 / pre-commit 15 / commit-convention 10 / perf 20 / pages 20。
 - **`concurrency` 只取消 PR 上的旧任务**：连续推 3 个提交修同一处时，
   前两次的流水线已经没有意义，让它们继续跑既占名额又会在 Actions 页面刷出一片过期的红叉。
   但 **`main` 上的 push 必须全部跑完**——每次合并到 main 都可能引入问题，漏掉任何一次都是"没测过就进主干"。

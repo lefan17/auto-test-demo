@@ -87,7 +87,7 @@ $env:TEST_ENV = "prod"; pytest     # → data/config.prod.yaml
 加载器是 `common/config.py` 的 `get_config()`。**改动它时有一条硬约束**：
 `TEST_ENV` 未设置时的返回值必须与旧实现（`common/yaml_util.get_config()`
 直接读 `config.yaml`）逐字节一致。这条已经有回归保护——
-CI 里跑的就是默认档的 473 条用例。
+CI 里跑的就是默认档的 520 条用例（`-m "not ui"` 的收集数，全仓共 554 条）。
 
 ---
 
