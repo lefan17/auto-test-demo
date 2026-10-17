@@ -11,6 +11,21 @@
 # 搬迁的代价是两份真值来源，而收益只是"符合某个惯例"——不值得。
 # pyproject 只承载"无法放在别处"的配置。
 
+# ---------------------------------------------------------------------------
+# 构建后端：让 `pip install -e .` 能跑通
+# ---------------------------------------------------------------------------
+#
+# 这一段此前不存在，后果是 `pip install -e .` 直接失败（本机实测）：
+#   error: Multiple top-level packages discovered in a flat-layout:
+#   ['ui', 'apis', 'data', 'perf', 'common', 'qaplat', 'mes_web', 'reports', ...]
+# 没有 [build-system] 时 pip 走 setuptools 的 legacy 路径并**自动发现**顶层包，
+# 而本仓顶层有 8 个带 __init__.py 的目录，发现过程必然撞上"多顶层包"这道保护。
+# 显式声明后端之后，pip 不再猜用什么构建，配合下面 [tool.setuptools] 的
+# packages = [] 即可装（只装元数据，理由见那一节）。
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "fullstack-test-framework"
 version = "0.1.0"
@@ -22,6 +37,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 # 依赖请见 requirements.txt（含精确版本）；锁文件见 requirements.lock。
 dependencies = []
+
+# 本仓是一个**测试框架**，不是可导入的库：上面 dependencies 为空，这里 packages 也为空。
+# 装它只是为了让 `pip install -e .` 不报错、让工具能读到元数据（名字/版本/requires-python），
+# 而不是为了让谁 `import` 它——用例靠 conftest.py 的 sys.path 注入找到 apis/ qaplat/ 这些目录，
+# 那条路径与 site-packages 是两套语义，混在一起只会让"为什么能 import"变得说不清。
+# 也不让 setuptools 自动发现：实测会撞上上面的 flat-layout 多包错误，而随手列一份
+# include 白名单就成了第三份真值来源——本仓只认 requirements.txt 这一份。
+[tool.setuptools]
+packages = []
 
 # ---------------------------------------------------------------------------
 # mypy：静态类型检查
