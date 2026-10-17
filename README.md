@@ -351,7 +351,7 @@ $env:TEST_ENV = "prod";    pytest -m api     # → data/config.prod.yaml
 > 而 `mes_server` 是 session 作用域 = 每个 worker 各起一个独立 mock server、各建一份 SQLite，
 > 于是两边都不自洽。注意行数一条不差，只有库存两个合计偏——所以别用"脏数据没清"去解释它。
 >
-> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测串行 78.52s → 并行 34.37s，约 2.3×），
+> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测串行 85.23s → 并行 39.03s，约 2.2×），
 > 而 `-m mes` / `-m login` / `-m ui` **刻意不开**，理由见"持续集成"一节。
 
 ### 口令与密钥
@@ -1061,11 +1061,11 @@ qaplat 平台的 5 页 HTML 报表除了进 Artifacts，还会被 `pages` job �
 
 ### 并行、超时、定时与通知
 
-- **`-m api` 开 `-n 4 --dist loadfile`**（实测串行 78.52s → 并行 34.37s，约 2.3×）。
+- **`-m api` 开 `-n 4 --dist loadfile`**（实测串行 85.23s → 并行 39.03s，约 2.2×）。
   必须是 `loadfile`：默认的 `--dist load` 在改造前实测 `-m mes` → `30 passed, 1 error`（退出码 1），
   根因见上方"关于 `-n` 并行"。**注意那个失败并没有消失**——2026-10-17 复测是 1/4 通过，理由同上。
 - **`-m mes` / `-m login` / `-m ui` 刻意不开并行**，理由都基于实测：
-  ①`-m mes -n 4 --dist loadfile` 只快约 2 倍（20.75s vs 串行 43.00s），收益太小——
+  ①`-m mes -n 4 --dist loadfile` 只快约 1.75 倍（24.44s vs 串行 43.65s），收益太小——
   实测只摊到 6 个测试文件，而每个 worker 都要付一次"造一个独立 SQLite + 起一个 mock_server 子进程"
   的启动成本，把能省的都吃掉了；
   ②这组用例里有**真实线程交叠**的竞态断言（`testcases/mes/concurrency.py` 的
