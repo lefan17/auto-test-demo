@@ -39,6 +39,38 @@
 - [持续集成](#持续集成)
 - [常见问题](#常见问题)
 
+### 深入文档
+
+`docs/` 下的 Markdown 分两类，读之前先分清，能省不少时间。
+
+**活文档** —— 描述当前代码怎么用，随代码一起更新：
+
+- [`docs/platform-usage.md`](docs/platform-usage.md)：qaplat 平台层的**唯一使用手册**。
+  `gate --layer smoke|pr|nightly|release` 四层分别什么时候跑、度量库里存了什么、
+  包名为什么叫 `qaplat` 而不是 `platform`。本 README 只说平台层是什么，这份说怎么用。
+- [`docs/platform-metrics-report.md`](docs/platform-metrics-report.md)：平台层实测报告。
+  **是时点快照，不是当前值** —— 引用里面任何一个数字前，先看它的采集时间与基线 commit。
+- [`docs/mixed-flow-usage.md`](docs/mixed-flow-usage.md)：混合链路（接口造数 → UI 走流程 →
+  接口校验）的使用方式、架构与边界。契约冻结在 `FROZEN_MESWEB.md`，这份只讲怎么用、做到哪为止。
+- [`docs/sql_practice.md`](docs/sql_practice.md)：SQL 数据校验练习。「业务返回 200」不等于
+  「数据正确」这句话的手工版对照练习 —— 先用 SQL 自己想一遍，再看用例是怎么断言的。
+- [`docs/test_report_template.md`](docs/test_report_template.md)：测试报告模板。跑完只是跑完，
+  能说清结果才是交付；这份给的是结构。
+
+**历史交接（`wave\*-handoff`）** —— 分批交付时写给整合者的交接记录，里面写死了当时的基线
+commit 与工作副本路径。保留是为了追溯「当时为什么这么做」，**不是当前的使用文档**，
+照着它敲命令会撞上已经不存在的路径：
+
+- [`wave1-auth-handoff.md`](docs/wave1-auth-handoff.md)：密钥外置与 token 生命周期（P0-1 / P0-3）
+- [`wave2-flaky-handoff.md`](docs/wave2-flaky-handoff.md)：flaky 治理（P1-1）
+- [`wave2-ratelimit-handoff.md`](docs/wave2-ratelimit-handoff.md)：重试尊重 `Retry-After` 与有界退避（P1-2）
+- [`wave3-data-lifecycle-handoff.md`](docs/wave3-data-lifecycle-handoff.md)：数据生命周期（P2-5）
+- [`wave3-gate-policy-handoff.md`](docs/wave3-gate-policy-handoff.md)：分层门禁策略显式化（P2-4）
+- [`wave3-perf-baseline-handoff.md`](docs/wave3-perf-baseline-handoff.md)：性能基线回归（P2-2）
+
+另有 4 篇同性质的交接已在正文别处引用（`wave1-contract-handoff.md`、`wave2-coverage-handoff.md`、
+`wave3-load-handoff.md`、`wave3-zentao-handoff.md`），同一性质，这里不再重复列。
+
 ## 技术栈
 
 | 用途 | 选型 |
@@ -90,6 +122,87 @@ conftest.py   全局 fixture —— 配置、接口对象、报告钩子
 **为什么这么分层**：接口地址变了只改 `data/config.yaml`；接口字段变了只改 `data/schemas.py`；
 页面元素变了只改 `ui/pages/`；用例本身稳定不动。这是自动化框架能长期维护的前提。
 
+### 一条链路看全仓
+
+上面按目录讲了分层，下面这张图画的是**层与层之间真实的调用关系** —— 每组用例打的是谁、
+qaplat 的几个模块谁依赖谁、CI 里哪两个 job 会碰它：
+
+```mermaid
+flowchart TB
+    subgraph cases["① 用例层 testcases/（pytest）"]
+        direction LR
+        api["api/ 接口用例"]
+        ui["ui/ UI 用例（含混合链路闭环）"]
+        mes["mes/ 业务全链路"]
+        contract["contract/ 契约属性"]
+        login["login/ 登录契约与缺陷探针"]
+        platform["platform/ 平台层自测"]
+    end
+
+    subgraph sut["② 被测对象"]
+        direction LR
+        pub["公网练习站 jsonplaceholder / saucedemo"]
+        mock["mock_server 本地 Mock 后端 + 独立 SQLite"]
+        web["mes_web 本地 Demo Web（服务端转发）"]
+        lapp["login_app 本地被测服务（6 个已知缺陷）"]
+    end
+
+    subgraph qa["③ qaplat 平台层（纯标准库，无第三方依赖）"]
+        direction LR
+        dump["_dump.py 采集插件"]
+        reg["registry 覆盖矩阵"]
+        met["metrics 度量库 qaplat.db"]
+        gatel["gate 分层门禁"]
+        rep["report 5 页自包含 HTML"]
+    end
+
+    subgraph ci["④ GitHub Actions（8 个 job）"]
+        direction LR
+        others["lint / typecheck / security / pre-commit / commit-convention / perf"]
+        tj["test 契约漂移 → 六组用例 → flaky 账本 → Allure"]
+        pj["pages 生成报表 → 发布"]
+    end
+
+    gh["gh-pages 分支 · lefan17.github.io/fullstack-test-framework"]
+
+    api --> pub
+    ui --> pub
+    ui --> web
+    mes --> mock
+    mes --> web
+    web --> mock
+    contract --> mock
+    login --> lapp
+    platform -.->|"被测对象就是平台自己"| qa
+
+    tj -.->|"pytest 跑这些 marker"| cases
+    dump -.->|"dump 文件"| reg
+    dump -.->|"dump 文件"| gatel
+    gatel -->|"每次 gate 落库"| met
+    reg -->|"覆盖矩阵"| rep
+    met -->|"轮次 / 归因 / 漂移历史"| rep
+
+    pj -->|"registry build"| reg
+    pj -->|"drift record"| met
+    pj -->|"report --out"| rep
+    rep -->|"force push 整目录"| gh
+```
+
+看这张图要看出四件事：
+
+1. **只有两组用例打公网**：`api/` 与 `ui/` 指向 `data/config.yaml` 里的公网练习站；`mes/`、
+   `login/`、`contract/` 各自拉起本地服务（`mock_server` / `login_app` / `mes_web`），
+   所以除 api、ui 之外整套用例离线可跑 —— 这也是它们能当阻塞门禁、而 ui 只能标
+   `continue-on-error` 的根本原因。
+2. **`platform/` 的箭头指回 `qaplat/` 自己**：平台层的被测对象就是它本身，所以它单独占一个
+   marker，坏了会在 `test` job 里直接拦下来。
+3. **qaplat 内部是单向的**：`_dump.py` 是唯一采集入口（`-p qaplat._dump`），`registry` 与
+   `gate` 都读它写出的 dump 文件；`gate` 把每轮结果落进 `metrics`，`report` 再从
+   `registry` + `metrics` 两处读 —— 报表里的「覆盖」与「轮次」是两条独立的数据线。
+4. **CI 里只有 `pages` job 调用平台层 CLI**（`registry build` / `drift record` / `report`），
+   `test` job 只跑 `-m platform` 自测；所以 `gh-pages` 上的报表是每次 push 现场生成的，
+   不是仓库里存着的历史产物。
+
 ## 快速开始
 
 ```powershell
@@ -135,6 +248,13 @@ playwright install chromium
 > $env:PLAYWRIGHT_DOWNLOAD_HOST = "https://cdn.npmmirror.com/binaries/playwright"
 > playwright install chromium
 > ```
+
+> **第二条路（跨平台）**：`make install && make test`。仓库根的 `Makefile` 把本节这些命令
+> 收拢成 target（`make help` 列全），CI 里跑的也是同样两条命令。两处差别要知道：
+> `make install` 只装 Python 依赖、不代建 `.venv` 也不代下 chromium（只提示命令）；
+> `make test` 跑的是 `-m "not ui"`，比上面 `setup.ps1` 那遍 `-m api` 更宽。
+> Linux / macOS 上没有 `setup.ps1` 可跑，就走这条。
+
 
 ### 运行测试
 
