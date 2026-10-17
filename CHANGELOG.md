@@ -658,6 +658,107 @@ CI 那一组由 52.23% 升到 **80.31%**。耗时代价约 +4%。
 
 ---
 
+### 变更 —— 把「写在文档里、CI 从不执行」的补上，并给三个零测试脚本补测试（本轮）
+
+这一轮的出发点是审计里的同一类问题：**仓库里有一些东西，文档说有、实际没有任何一步执行它。**
+`scripts/check_gate_policy.py` 因此加了一条规则——文档里声明为「自检脚本」的东西，
+必须在 `.github/workflows/test.yml` 里真有一处调用，否则红。那条规则上线后立刻指出了四处。
+
+**（1）qaplat 分层门禁接进 CI**（`efde73f`）。`qaplat.cli gate` 此前只在本机跑过，
+CI 上没有任何一步调用它——也就是说「分层门禁」这个卖点在流水线里是空的。
+新增一步 `python -m qaplat.cli gate --layer pr`（`test.yml:455`，**不设 `continue-on-error`**）。
+配套补了一条用例 `test_run_layer_really_spawns_pytest_and_reads_the_dump`，
+它**只** monkeypatch `gate.RAW_DUMP_DIR`、不 monkeypatch `run_layer`，让「起子进程 → 读 dump →
+解析 cases/counts」这条路径第一次被真正覆盖。三次破坏实验（不读 dump / 子进程空跑 / 丢掉 caller 参数）
+全部变红，复原后转绿——`qaplat/gate.py` 一行没改，说明它本来就对，只是没人验过。
+实测样例：`gate --layer pr` → `total=292 passed=292 pass_rate=100.0% duration=99.7s`。
+
+**（2）覆盖率门槛 40% → 54%**（`test.yml:318`）。原来的 40 比当时实测低太多，
+等于没有门禁。新值贴着实测取下沿：`-m api --cov=.` 是 `TOTAL 8059 / 未覆盖 3471-3474 / 57%`
+（**56.9%**），取 54 留出 3 个点的退化余量而不是锁死当前值。
+全量 `-m "not ui" --cov=.` 是 `TOTAL 8238 1173 86%`。
+未覆盖数在 3471–3474 之间摆 3 条语句：本机带 `-n 4` 三次都是 3472、不带 `-n` 两次都是 3474，
+CI 上同一条命令给出 3471——这 3 条差在哪**没查清，不编造原因**，所以文档里写成区间。
+
+**（3）新增 `windows` job**（`test.yml:117`，`windows-latest`）。整条流水线此前 8 个 job
+全在 `ubuntu-latest` 上跑，而开发机是 Windows、`conftest.py` 里有一批 cp936/路径相关的分支。
+新 job 跑 `ruff check` + `ruff format --check` + `mypy` + `pytest -m api`，
+**不装浏览器、不跑 UI**（省 2 分钟且 UI 打公网）。CI 上 8 步全绿，耗时约 2m37s。
+这个 job 随后立刻抓到两个真实的平台差异（见下面第 5 条）。
+
+**（4）依赖清单一致性接进 CI**（`test.yml:497`）：`scripts/check_deps_sync.py`（新增）
+对 `requirements.txt` 与 `requirements.lock` 做逐行对账，实测输出
+`16 条直接依赖逐字一致；lock 另有 45 个传递依赖（合法，不算漂移）`。
+
+**（5）三个零测试脚本补出契约用例**（`6205fb3` + `7e17c0c` + `a1e162b`）。
+`testcases/platform/` 下新增 4 个文件，共 **46 条**用例：
+`test_scripts_check_deps_sync.py` 10、`test_scripts_install_chromium.py` 16、
+`test_scripts_mes_data_ttl.py` 9、`test_scripts_report_to_zentao.py` 11。
+这批用例本身就是一次审计，抓到的都是**用例自己写错**而不是产品错，值得记下来：
+
+- `install_chromium` 的用例把路径写死成 Windows 反斜杠（`f"{root}\\chromium-1155"`），
+  在 ubuntu runner 上 `Install location` 变成 `/tmp/...\chromium-1155` 这个单层文件名，
+  于是断言「解压出了 chrome.exe」必红。**这正是新加的 `windows` job 之外、
+  ubuntu 上反而失败的一类问题**（`7e17c0c` 加 `_sep()` 返回 `"\\"` 或 `"/"`）。
+- 禅道那两条 exit-1 用例（`report_to_zentao`）红得更有教育意义：被测脚本用
+  `print(..., file=sys.stderr)` 输出中文，在 cp936 控制台按 GBK 写出；
+  用例用 `encoding="utf-8", errors="replace"` 读回来，中文全变 `\ufffd`，
+  于是「路径没出现在 stderr 里」这个断言失败——**`errors="replace"` 把解码错伪装成了业务错**。
+  修法是在子进程 env 里钉 `PYTHONIOENCODING=utf-8`（`test_scripts_report_to_zentao.py:38` 的 `_child_env()`），
+  **不改被测脚本**——cp936 下按 locale 输出是 CLI 的正常行为。
+
+**（6）`Makefile` 入口 + 仓库可 `pip install -e`**（`7c76fdc`）。
+9 个 target：`help` / `install` / `lint` / `typecheck` / `test`（`-m "not ui"`）/
+`test-all` / `cov` / `gate` / `clean`。`pyproject.toml` 补 `[build-system]` 与
+`[tool.setuptools] packages = []`——wheel 只含 dist-info，业务包仍靠 `conftest.py` 的 sys.path 注入，
+**不为打包而重构目录**。
+两处必须说清的差异：`make install` 只 `pip install -r requirements.txt`，不建 `.venv`、不装 Chromium；
+`make test` 是 `-m "not ui"` 而 `setup.ps1` 跑的是 `-m api`。README 里照实写了，没有说成等价。
+
+**（7）README 补文档索引、全仓链路图与 `make` 入口**（`4a7fc0c`）。
+此前 1007 行的 README 没有目录。新增的 mermaid 图（`README.md:130`）4 个 subgraph、19 条边
+（15 实线 + 4 虚线），用官方 `mermaid` 12.2.0 + `jsdom` 在 node 里 `parse()` 验证过
+（`PARSE_OK diagramType=flowchart-v2`）。
+两处刻意**不画**：CI → gate（当时全仓确实没有 `qaplat gate --layer` 调用，画了就是撒慌，
+所以先去第 1 条把它补上）、contract → login_app（contract 的 session fixture 起的是 MockServer，不是 login_app）。
+
+**（8）文档数字全线收口**（`ad520eb` / `151609a` / `f13367c` / `0e9df2c` / `180d8a5` / `3c78576`）。
+本轮用例集从 507 涨到 **554**（新增 46 条脚本契约用例 + gate 用例等），
+`test.yml` 注释里 107 条 / 116 条 / 4 个测试文件 / 覆盖率 8041·3460·56.97% 全部过期。
+两个决定：
+
+- **散文里的行号不再逐个补，改成命名锚点。** 实测 16 处「第 N 行」引用里有 11 处已经指错位置
+  （UI 的 `continue-on-error` 写 `test.yml:299`，真值 365；开 issue 的 step 写 534-556，真值 629）。
+  行号每改一次文件就漂一次，而 `scripts/check_gate_policy.py` 只校验四张结构化表、
+  **不解析散文行号**，所以这类漂移从来不会让 CI 变红——它只会骗读文档的人。
+  改成按 job 名 / step 名 / 符号名引用后，只剩 7 处真正稳定的行号
+  （`on:` / `concurrency:` / `CODEOWNERS:18` / `flaky_policy.py:22-37` / `conftest.py` 三个 hook）。
+- **实测数字写区间、不写死单值**，并在旁边写明为什么有摆动。
+  另有 5 处旧数字保留不改并注明是历史记录：`CHANGELOG.md`、`docs/wave1-*.md`、`docs/wave2-*.md`、
+  `docs/wave3-gate-policy-handoff.md` 的表格。文档演进叙述如实保留比事后抹平更有价值。
+
+**（9）一处推翻自己的旧结论：`--dist load` 的那个 1 error 不是「复现不出来」。**
+早前 `test.yml` 里登记过「那个 1 error 在当前用例集下复现不出来了（四次实测 54 passed）」。
+2026-10-17 复测是 **1/4 通过**（三次 `64 passed, 1 error`、退出码 1），那条结论作废。
+最小复现 `pytest -k test_permission_matrix -n 7 --dist load`，报错挂在 teardown：
+`库存可用量合计: 基线 3270.000 -> 现在 3268.000（差 -2.000）`。根因坐实：
+`PERMISSION_MATRIX` 里「生产领料」扣 2.000、「退料」补 2.000，**两行靠彼此抵消**才回到基线；
+`--dist load` 把它们分给不同 worker，而 `mes_server` 是 `scope="session"`，
+xdist 下每个 worker 各起一个独立 mock server、各建一份 SQLite，于是两边都不自洽。
+注意行数一条不差、只有库存两个合计偏，所以别用「脏数据没清」去解释它。
+顺带把并行耗时也全部重测更正：`-m api` 串行 85.23s → `-n 4 --dist loadfile` 39.03s（约 2.2×，
+旧值 2.9×）；`-m mes` 并行只快约 1.75 倍（24.44s vs 串行 43.65s，旧值 1.26 倍）。
+
+**（10）CI 稳定性，含三次真红**。本轮推送里前三次是失败的，值得如实记：
+`6205fb3`（run 39001981410）、`5c6046c`（run 39002000331）、`7e17c0c`（run 39003031466）
+三次都是 `test` job 红，根因同一个——就是上面第 5 条那个把 Windows 反斜杠写死的用例，
+在 ubuntu runner 上解不出 `Install location`。`a1e162b` 修好后转绿。
+从 `efde73f` 起七次推送，`0e9df2c` / `f13367c` / `180d8a5` / `151609a` / `ad520eb` / `3c78576` /
+`efde73f` 的每个 run 都是 8 个执行 job 全 success + `perf` 按设计 skipped；
+最后一轮 run 39013588530（`0e9df2c`）9 个 job 逐一核对过。
+
+---
+
 ## 2026-10-13
 
 ### 新增
