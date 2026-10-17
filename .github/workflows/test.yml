@@ -292,8 +292,10 @@ jobs:
           CONTRACT_MAX_EXAMPLES: "8"
 
       - name: 运行接口自动化（含覆盖率门禁）
-        # 这一组是 116 条用例（33 接口 + 54 MES + 29 登录，后两组的用例同时打了
-        # api 标记）。契约那 224 条**不在这里**：它们要单独起本地服务、单独钉样例数，
+        # 这一组是 132 条用例（`-m api` 实测）：49 条纯接口 + 54 条同时打了 api 和 mes
+        # + 29 条同时打了 api 和 login。后两组是**交集**而不是另两个目录——`-m mes`
+        # 会把这 54 条再数一遍、`-m login` 会把那 29 条再数一遍，所以别把三层数字相加。
+        # 契约那 224 条**不在这里**：它们要单独起本地服务、单独钉样例数，
         # 已经在上面那一步跑过了。
         # --cov= 后面跟空值是关掉自动生成的 HTML/XML 子报告，
         # 报告格式由 --cov-report=term 单独指定，避免往工作区里写垃圾。
@@ -307,19 +309,25 @@ jobs:
           # （实测 GitHub runner 连 jsonplaceholder 常在 2-4 秒波动）
           MAX_RESPONSE_MS: "8000"
 
-      # 覆盖率门禁的数字来源：本机在这条命令上**串行实测 3 次**，
-      # 三次完全相同 → `TOTAL 8041 3460 57%`（56.97%）。门禁取 54，留约 3pp 余量。
+      # 覆盖率门禁的数字来源：本机在这条命令上**串行实测多次** →
+      # `TOTAL 8059 / 未覆盖 3471-3474 / 57%`（56.9%）。这 3 条语句的摆动解释不全：本机
+      # 带 `-n 4` 三次都是 3472、不带 `-n` 两次都是 3474，而 CI 同样是 `-n 4` 却给出 3471。
+      # 所以写区间，不写某一个精确值。门禁取 54，留约 3pp 余量。
       #
       # ⚠️ 阈值是量出来的，不是拍的，也不能沿用历史推算值：
       #   - 本文件早前记的 78.87% / 88.90% 是更早树状态的实测，早就作废。
       #   - 36c1cc5 那棵树上是 61.27%（分母 7095 / 未覆盖 2748）。
-      #   - 现在同一命令是 56.97%（分母 8041 / 未覆盖 3460）。`--cov=.` 把仓库
+      #   - 现在同一命令是 56.9%（分母 8059 / 未覆盖约 3472）。`--cov=.` 把仓库
       #     **全文**算进分母，而 `-m api` 只跑接口那 132 条，摸不到新增文件。
-      #   - 分母涨的这 946 条里，能逐文件对上的是 36c1cc5..HEAD 新增的 5 个 .py
-      #     （`coverage.parser.PythonParser` 量出 626 条）+ `tools/install_chromium.py`
-      #     的 +5；**剩下 315 条我没能逐文件对上**，不编造原因。
-      #   - 无论那 315 条是什么，结论不变：拿 61.27% 时代的口径写 58 会让这一步
-      #     当场红。按当前实测 56.97% 留约 3pp 余量，取 54。
+      #   - 分母 7095 -> 8059 涨了 964 条（两个数都是量出来的）。能逐文件对上的是
+      #     36c1cc5..HEAD 新增的 5 个 .py 共 626 条（`coverage.parser.PythonParser` 量出）
+      #     + `tools/install_chromium.py` 的 +5；**剩下 333 条我没能逐文件对上**，不编造原因。
+      #   - 那 626 条里，539 条其实是**测试文件自己**的语句——`--cov=.` 把 `testcases/`
+      #     也算进分母：`test_scripts_check_deps_sync.py` +71、
+      #     `test_scripts_install_chromium.py` +143、`test_scripts_mes_data_ttl.py` +171、
+      #     `test_scripts_report_to_zentao.py` +154。这是分母上涨的主因。
+      #   - 结论不变：拿 61.27% 时代的口径写 58 会让这一步当场红。
+      #     按当前实测 56.9% 留约 3pp 余量，取 54。
       #
       # 为什么不贴着实测值设：这个数字里有相当一部分来自公网接口用例本身，
       # 在 runner 上会抖动；门禁的意义是"拦住覆盖率**退化**"，不是"卡住当前值"。
@@ -364,7 +372,7 @@ jobs:
       # 这一组**刻意不开 -n**，尽管 `-m api` 那一步开过了。理由有两条，都有实测：
       # 1. 并行只快 1.26 倍，收益极小：本机三次实测
       #    `-m mes -n 4 --dist loadfile` 16.54 / 16.58 / 16.57s，
-      #    串行 20.88 / 21.07 / 20.57s。只有 4 个测试文件，
+      #    串行 20.88 / 21.07 / 20.57s。实测只摊到 6 个测试文件，
       #    而每个 worker 都要付一次"造一个独立 SQLite + 起一个 mock_server 子进程"
       #    的启动成本，把能省的都吃掉了。
       #    （⚠️ 旧注释写的是"并行反而更慢 12.24s vs 8.67s"——那是改造前 30 条用例时
@@ -399,15 +407,16 @@ jobs:
 
       # qaplat 平台层自测：被测对象是**平台自己**——registry 的用例/operation 归属、
       # metrics_store 的落盘格式、gate_layers 的门禁分层、drift_report_cli 的命令行契约，
-      # 实测 107 条（testcases/platform/ 下 4 个文件）。
-      # 它必须独立成 step，理由与上面的 contract 那一步同理：这 107 条
+      # 实测 154 条（testcases/platform/ 下 9 个文件）。
+      # 它必须独立成 step，理由与上面的 contract 那一步同理：这 154 条
       # **完全落在宿主层之外**——`-m "platform and (api or ui or mes or login or contract or perf)"`
       # 的收集数是 0，所以 `-m api` / `-m mes` / `-m login` 三步一条都跑不到它。
-      # 没有这一步，这 107 条在 CI 上永远不会被执行（改前实测：本文件全文没有
+      # 没有这一步，这 154 条在 CI 上永远不会被执行（改前实测：本文件全文没有
       # `platform` 字样），平台层会静默腐烂——而门禁脚本 check_gate_policy.py 自己
       # 就住在 scripts/ 下、由 qaplat 平台层提供分层与归属判定，它坏了没人知道。
       # 不设 continue-on-error：平台层红了就是真坏了，必须拦住流水线。
-      # 不开 -n：只有 4 个测试文件，worker 启动开销大于收益（与 mes / login 同理）。
+      # 不开 -n：这 9 个文件里多是秒级单元测试，`-n` 的 worker 启动与各自导入开销
+      # 大于收益（与 mes / login 同理）。
       - name: 运行 qaplat 平台层自测（平台自身，独立于宿主层，失败即阻塞）
         run: pytest -m platform --alluredir=allure-results
 
@@ -582,7 +591,7 @@ jobs:
             python -m coverage report --skip-covered --skip-empty >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> 门禁值 54%（本组实测 56.97%，串行三次一致）。" >> "$GITHUB_STEP_SUMMARY"
+            echo "> 门禁值 54%（本组实测 56.9%，未覆盖约 3472 条语句）。" >> "$GITHUB_STEP_SUMMARY"
             echo "> \`mock_server/*\` 的数字**已经包含**由 fixture 拉起的真服务子进程（波 2 · P1-3）。" >> "$GITHUB_STEP_SUMMARY"
             echo "> 服务经 scripts/service_launcher.py 启动并优雅退出，coverage 分片由 pytest-cov 自动 combine。" >> "$GITHUB_STEP_SUMMARY"
           fi
