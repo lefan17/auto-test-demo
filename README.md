@@ -351,7 +351,7 @@ $env:TEST_ENV = "prod";    pytest -m api     # → data/config.prod.yaml
 > 而 `mes_server` 是 session 作用域 = 每个 worker 各起一个独立 mock server、各建一份 SQLite，
 > 于是两边都不自洽。注意行数一条不差，只有库存两个合计偏——所以别用"脏数据没清"去解释它。
 >
-> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测串行 85.23s → 并行 39.03s，约 2.2×），
+> 所以 CI 里 `-m api` 那一步开 `-n 4 --dist loadfile`（实测串行 75.55–79.11s → 并行 38.00s，约 2.0–2.1×），
 > 而 `-m mes` / `-m login` / `-m ui` **刻意不开**，理由见"持续集成"一节。
 
 ### 口令与密钥
@@ -449,7 +449,7 @@ pytest --html=report.html --self-contained-html
   契约声称的能力从来没被验证过——**这是只有"拿 spec 当输入去发请求"才会暴露的问题**。
 
   > **属性测试的绿灯是"这么多样本没找到反例"，不是证明。** 而且它必须**确定性**才有门禁价值：
-  > 默认 8 个样例/operation，`CONTRACT_MAX_EXAMPLES=50` 放大约 2.5 倍耗时（24s → 58s）。
+  > 默认 8 个样例/operation，`CONTRACT_MAX_EXAMPLES=50` 放大约 2.5 倍耗时（19s → 49s）。
   > 早期版本正因为把 hypothesis 样例数据库（`.hypothesis/`）当环境噪声，出现过
   > "清空后绿、留着样本就红"——同一份代码红在不同端点上（`materials` / `work-orders` 的
   > `page=461168601842738792`，以及 `inventory/{issue,reverse}` 的 404）。
@@ -678,29 +678,29 @@ UI 与接口操作不到同一份数据、闭环是断的，所以这条打的�
 > **这些数字不能相加**。全量共 571 条 = 49 接口 + 34 UI + 64 MES + 29 登录 + 224 契约 + 171 平台层自测。
 > 另有 2 条性能基线用例（`-m perf`）挂在接口目录里，`-m 'api and not perf'` 是 130 条。
 > 契约那 224 条是**独立标记**（`-m contract`），不并入 `api` ——
-> 它们要起本地服务、按 spec 生成请求，属于另一档耗时（约 25 秒），
+> 它们要起本地服务、按 spec 生成请求，属于另一档耗时（约 20 秒），
 > 不适合塞进"日常开发随手跑"的那一组。
 
 ```text
 pytest --collect-only -q                 571 tests collected
 
-pytest -m api                            132 passed, 439 deselected in 97.80s
-pytest -m mes                             64 passed, 507 deselected in 53.90s
-pytest -m login                           29 passed, 542 deselected in  4.52s
-pytest -m contract                       213 passed, 347 deselected, 11 xfailed in 26.16s
-pytest -m perf                             2 passed, 569 deselected in  8.67s
-pytest -m platform                       171 passed, 400 deselected in 38.09s
-pytest -m ui                             34 passed, 537 deselected in 52.98s（收集 34 条；浏览器已装好，全绿，见下）
+pytest -m api                            132 passed, 439 deselected in 75.55–79.11s
+pytest -m mes                             64 passed, 507 deselected in 37.43s
+pytest -m login                           29 passed, 542 deselected in  3.38s
+pytest -m contract                       213 passed, 347 deselected, 11 xfailed in 19.42s
+pytest -m perf                             2 passed, 569 deselected in  5.43s
+pytest -m platform                       171 passed, 400 deselected in 23.68s
+pytest -m ui                             34 passed, 537 deselected in 41.21–41.57s（收集 34 条；浏览器已装好，全绿，见下）
 
-cd traffic-replay; pytest                173 passed in 17.92s（批次 2，自带 pytest.ini）
+cd traffic-replay; pytest                173 passed in 15.93s（批次 2，自带 pytest.ini）
 
-pytest -m api -n 4 --dist loadfile       132 passed in 53.77s
-pytest -m mes -n 4 --dist loadfile        64 passed in 31.65s
+pytest -m api -n 4 --dist loadfile       132 passed in 38.00s
+pytest -m mes -n 4 --dist loadfile        64 passed in 24.24s
 CONTRACT_MAX_EXAMPLES=50 pytest -m contract
-                                         213 passed, 11 xfailed in 55.64s  # 放大 6.25 倍样例，耗时 ×2.1
+                                         213 passed, 11 xfailed in 49.24s  # 放大 6.25 倍样例，耗时 ×2.5
 
-pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 8360 1157–1158 86%
-pytest -m api -n 4 ... --cov-fail-under=54                 TOTAL 8181 3554 57%（56.56%）
+pytest -m "not ui" -n 4 --cov=. --cov-report=term          TOTAL 8360 1152–1158 86%
+pytest -m api -n 4 ... --cov-fail-under=54                 TOTAL 8181 3552–3554 57%（56.56%–56.58%）
                                         Required test coverage of 54% reached（退出码 0）
 pytest -m mes --cov=mock_server --cov-report=term          TOTAL 1374 235 83%
 pytest -m login --cov=login_app --cov-report=term          TOTAL   88  13 85%
@@ -715,8 +715,8 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > **上面这一块都是 2026-10-17 重跑的实测**，没有一行是从旧值推算的。基准树是本条提交的父提交
 > （即新增 `testcases/platform/test_dump_plugin.py` 之前的那棵树）；覆盖率与各层计数都在同一棵树上测。
 > 一个例外要说清：`passed` / `deselected` / 覆盖率都是**可复现的定值**（串行重跑逐位相同），
-> 但**耗时是单次观测**——`-m api` 与 `-m ui` 打公网，批次间能差几十秒（本轮 `-m api` 69s ↔ 82s、
-> `-m ui` 33s ↔ 36s）。所以耗时那一栏请读量级，门禁和判定从不依赖它。
+> 但**耗时是单次观测**——`-m api` 与 `-m ui` 打公网，批次间能差十几秒（本轮两轮 `-m api` 75.55s ↔ 79.11s、
+> `-m ui` 41.21s ↔ 41.57s，所以只有这两行写了区间）。所以耗时那一栏请读量级，门禁和判定从不依赖它。
 > 前提：`$env:TMP` 必须指向一个**确实存在**的可写目录——那里不可写时 pytest 的 basetemp 会回落到仓根，
 > 它生成的 `.py` 会被 `--cov=.` 算进分母，分母就跟着漂。
 > **marker 真的重叠，别做加法**：`-m api` 的 132 条 = `api and mes` 54 条 + `api and login` 29 条
@@ -724,11 +724,11 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > 所以 132 = 49 + 54 + 29 这个加法成立，但 "49 + 54 + 29" 里的 54、29 已经分别被 `-m mes`、`-m login` 数过一遍。
 > 全量 571 = 49 接口 + 34 UI + 64 MES + 29 登录 + 224 契约 + 171 平台层自测（这六组互不重叠，加法成立）。
 > **覆盖率两行同一个道理**：`--cov=.` 的分母里含 `qaplat/` 与 `mes_web/` 整目录，
-> 所以 `not ui` 是 8360 分母 / 未覆盖 1157–1158 / **86%**（串行两次 1158 / 1157），
-> 而只跑 `-m api` 的分母是 8181 / 未覆盖 3554 / **57%（56.56%）**（串行两次都是 3554）。
+> 所以 `not ui` 是 8360 分母 / 未覆盖 1152–1158 / **86%**（串行两次 1158 / 1157，带 `-n 4` 一次 1152），
+> 而只跑 `-m api` 的分母是 8181 / 未覆盖 3552–3554 / **57%（56.56%–56.58%）**。
 > 两组的分母差 179 条，差的正是 `-m api` 摸不到的那些文件——所以两个百分比不可比，
 > 门禁挂在 `-m api` 上只能拿 57% 这一栏说事。
-> 这一栏在 3554 这一档：`-m api` 不 import `testcases/` 里的平台层用例，分母比 `not ui` 少 179 条，
+> 这一栏在 3552–3554 这一档：`-m api` 不 import `testcases/` 里的平台层用例，分母比 `not ui` 少 179 条，
 > 但那 179 条里有相当一部分是被 `-m api` 覆盖不到的模块，所以未覆盖行数反而更多。
 > `not ui` 那一栏仍按两点写区间：串行两次差 1 行，属于运行间抖动（同一份代码、同一台机器也会变）。
 > 所以这里写区间，不写某一个"精确值"。
@@ -736,7 +736,7 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > 且它的 `analyze/` `recorder/` `replay/` 都没有 `__init__.py`（靠 `conftest.py` 插 `sys.path` 导入）。
 
 > **`-m ui` 那一行是本次真的重跑过的**：命令是 `pytest -m ui -o addopts=`，
-> 结果是 `34 passed, 537 deselected in 52.98s`，退出码 0。收集数 34 条
+> 结果是 `34 passed, 537 deselected in 41.21–41.57s`，退出码 0。收集数 34 条
 > （`pytest -m ui --collect-only -q -o addopts=` → `34/571 tests collected`）。
 > 这 34 条里，15 条（`testcases/ui/test_mes_web_app.py`）走 HTTP 层、**不申请 `page`
 > fixture、不起浏览器**；另外 19 条（`test_inventory.py` 8 条 / `test_login.py` 6 条 /
@@ -751,13 +751,13 @@ python tools/check_retry.py             23/23 通过，退出码 0（原 12 条 
 > 早期本文件把同一批 error 归因成"沙箱禁止 asyncio 建命名管道（`_winapi.CreateNamedPipe`）"，
 > 那个归因不成立：那 19 条 error 逐条都能用"缺浏览器"复现，没有一条是那个原因。
 >
-> **覆盖率门禁挂在 `-m api` 上，而它现在有 56.56%，不是"全量"的 86%**：
+> **覆盖率门禁挂在 `-m api` 上，而它现在有 56.6%，不是"全量"的 86%**：
 > 这两组的选取集**不再相同**（改造前它们恰好都是 92 条，所以旧文档里
 > "选取集完全相同"那句当时是对的，现在错了）。
-> 门禁定在 54：它要拦的是**退化**，不是卡住当前值（当前 56.56%，留约 2.6pp 余量）。
+> 门禁定在 54：它要拦的是**退化**，不是卡住当前值（当前 56.56%–56.58%，留约 2.6pp 余量）。
 >
-> **当前值（2026-10-17，本条的父提交这棵树）**：`not ui` 分母 8360、未覆盖 1157–1158、**86%**；
-> `api` 分母 8181、未覆盖 3554、**57%（56.56%）**。
+> **当前值（2026-10-17，`f8116c1` 这棵树）**：`not ui` 分母 8360、未覆盖 1152–1158、**86%**；
+> `api` 分母 8181、未覆盖 3552–3554、**57%（56.56%–56.58%）**。
 >
 > **以下为历史记录，分母已作废。** 它记的是"当时在某棵树上串行测了几次"，
 > 把里面的分母与未覆盖数换成新值就等于伪造记录，所以下面的数字原样保留，只作溯源用：
@@ -1062,11 +1062,11 @@ qaplat 平台的 5 页 HTML 报表除了进 Artifacts，还会被 `pages` job �
 
 ### 并行、超时、定时与通知
 
-- **`-m api` 开 `-n 4 --dist loadfile`**（实测串行 85.23s → 并行 39.03s，约 2.2×）。
+- **`-m api` 开 `-n 4 --dist loadfile`**（实测串行 75.55–79.11s → 并行 38.00s，约 2.0–2.1×）。
   必须是 `loadfile`：默认的 `--dist load` 在改造前实测 `-m mes` → `30 passed, 1 error`（退出码 1），
   根因见上方"关于 `-n` 并行"。**注意那个失败并没有消失**——2026-10-17 复测是 1/4 通过，理由同上。
 - **`-m mes` / `-m login` / `-m ui` 刻意不开并行**，理由都基于实测：
-  ①`-m mes -n 4 --dist loadfile` 只快约 1.75 倍（24.44s vs 串行 43.65s），收益太小——
+  ①`-m mes -n 4 --dist loadfile` 只快约 1.55 倍（24.24s vs 串行 37.43s），收益太小——
   实测只摊到 6 个测试文件，而每个 worker 都要付一次"造一个独立 SQLite + 起一个 mock_server 子进程"
   的启动成本，把能省的都吃掉了；
   ②这组用例里有**真实线程交叠**的竞态断言（`testcases/mes/concurrency.py` 的

@@ -799,11 +799,11 @@ setup 失败与 teardown 失败都记成 `error`。所以这一轮补的是**守
 
 **同时同步的数字**（新增 17 条用例后全仓从 554 涨到 **571** 条）：
 `README.md`（平台层 154 → **171**、无编号 nodeid 527 → **544**、各 `-m` 的 `deselected` 全部重算、
-覆盖率 `not ui` → `TOTAL 8360 1157-1158 86%` 与 `api` → `TOTAL 8181 3554 57%（56.56%）`、
+覆盖率 `not ui` → `TOTAL 8360 1152-1158 86%` 与 `api` → `TOTAL 8181 3552-3554 57%（56.56%-56.58%）`、
 mypy 114 → **115 source files**）、`CONTRIBUTING.md`（默认档 520 → **537** 收集、
 `-m "not ui"` 期望 526 passed + 11 xfailed）、`.github/PULL_REQUEST_TEMPLATE.md`（154 → **171**）、
 `.github/workflows/test.yml`（平台层注释 154 → **171**、myPy 65 → **115 source files**、
-覆盖率注释与 step summary 的 56.88%-56.92% → **56.56%**）、
+覆盖率注释与 step summary 的 56.88%-56.92% → **56.56%-56.58%**）、
 `docs/platform-usage.md` / `docs/platform-metrics-report.md` / `docs/wave3-gate-policy-handoff.md` /
 `docs/质量门禁策略.md`（554 → **571**、154 → **171**）。
 
