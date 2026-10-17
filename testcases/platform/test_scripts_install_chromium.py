@@ -84,9 +84,12 @@ def test_dry_run_parses_each_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [[sys.executable, "-m", "playwright", "install", "chromium", "--dry-run"]]
     assert [entry["name"] for entry in entries] == ["chromium", "chromium-headless-shell"]
     assert [entry["rev"] for entry in entries] == ["1155", "1155"]
-    assert entries[0]["location"] == "C:\\Users\\u\\AppData\\Local\\ms-playwright\\chromium-1155"
+    # 期望值也按平台拼：脚本原样返回它解析到的那串字符串，不做路径改写。
+    sep = _sep()
+    root = f"C:{sep}Users{sep}u{sep}AppData{sep}Local{sep}ms-playwright"
+    assert entries[0]["location"] == f"{root}{sep}chromium-1155"
     assert entries[0]["url"] == "https://cdn.example/playwright/builds/chromium/1155/chromium-win64.zip"
-    assert entries[1]["location"] == "C:\\Users\\u\\AppData\\Local\\ms-playwright\\chromium_headless_shell-1155"
+    assert entries[1]["location"] == f"{root}{sep}chromium_headless_shell-1155"
     assert entries[1]["url"].endswith("chromium-headless-shell-win64.zip")
 
 
