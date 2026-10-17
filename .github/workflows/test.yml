@@ -552,7 +552,7 @@ jobs:
             echo ""
             echo "| 项目 | 结果 |"
             echo "|---|---|"
-            echo "| 接口用例 | \`pytest -m api\`（-n 4 --dist loadfile，含覆盖率门禁 40%） |"
+            echo "| 接口用例 | \`pytest -m api\`（-n 4 --dist loadfile，含覆盖率门禁 54%） |"
             echo "| 契约用例 | \`pytest -m contract\`（含漂移检测 \`export_openapi.py --check\`，样例数钉死 8） |"
             echo "| UI 用例 | \`pytest -m ui\`（失败不阻断） |"
             echo "| 业务全链路 | \`pytest -m mes\`（本地 Mock 后端，刻意串行） |"
@@ -582,7 +582,7 @@ jobs:
             python -m coverage report --skip-covered --skip-empty >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> 门禁值 40%（本组实测 78.87%；全量 \`-m \"not ui\"\` 是 88.90%）。" >> "$GITHUB_STEP_SUMMARY"
+            echo "> 门禁值 54%（本组实测 56.97%，串行三次一致）。" >> "$GITHUB_STEP_SUMMARY"
             echo "> \`mock_server/*\` 的数字**已经包含**由 fixture 拉起的真服务子进程（波 2 · P1-3）。" >> "$GITHUB_STEP_SUMMARY"
             echo "> 服务经 scripts/service_launcher.py 启动并优雅退出，coverage 分片由 pytest-cov 自动 combine。" >> "$GITHUB_STEP_SUMMARY"
           fi
