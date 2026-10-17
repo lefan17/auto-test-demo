@@ -757,6 +757,56 @@ xdist 下每个 worker 各起一个独立 mock server、各建一份 SQLite，�
 `efde73f` 的每个 run 都是 8 个执行 job 全 success + `perf` 按设计 skipped；
 最后一轮 run 39013588530（`0e9df2c`）9 个 job 逐一核对过。
 
+### 变更 —— 给「误差预算唯一数据源」补上它自己的测试（本轮）
+
+`qaplat/_dump.py` 是采集插件：它把每个用例压成一条 `{nodeid, outcome, duration, message}`，
+`outcome` 的取值（`passed` / `failed` / `error` / `skipped` / `xfailed`）经 `qaplat/gate.py`
+数成 `PytestRun.errors`，再经 `max_errors` 判据决定门禁红不红。**整条误差预算的链路都建立在
+这一个字段上，而它没有一个直接测试。**
+
+**发现方式（可复现）**：对 `_dump.py` 的分类分支做三次变异，154 条平台层用例**全绿零失败**。
+其中两次是真变异，一次是我自己写错了（见下）：
+
+| 变异 | 改法 | 结果 |
+| --- | --- | --- |
+| M1 | `qaplat/_dump.py` 里 setup 失败写成 `failed` 而不是 `error` | 154 passed，零失败 |
+| M2 | `qaplat/_dump.py` 里整条 teardown 分支删掉 | 154 passed，零失败 |
+| M3 | `qaplat/gate.py` 的 `if name in ("error", "errors"):` 收窄成 `if name in ("error",):` | 154 passed，零失败 |
+
+**M3 是等价变异，不算漏测**——`_SUMMARY_COUNT_RE` 的交替顺序是 `error|errors`，正则最左优先
+让 `6 errors` 里的 `error` 先被吃掉，`name` 本来就是 `"error"`，那个 `"errors"` 分支永远走不到。
+把它记在这里是因为「变异没被杀死」有两种含义：漏测，或者变异本身不改变行为。**不做这一步反推，
+就会把一条死分支当成被测代码。**
+
+**新增 `testcases/platform/test_dump_plugin.py`（17 条）**，一个分支一个用例：
+setup 失败记 `error` 而不是 `failed`、call 失败记 `failed`、teardown 失败记 `error`、
+teardown 失败不覆盖先前的失败、setup 跳过记 `skipped`、call 跳过无 `wasxfail` 记 `skipped`、
+有 `wasxfail` 记 `xfailed`、三阶段全净记 `passed`、三阶段耗时相加、失败 message 截断到 2000 字符、
+通过的用例 message 保持为空、`pytest_sessionfinish` 写出 `cases`/`markers`/`files`/`covers`、
+没传 `--qaplat-dump` 时不写盘、xdist worker 里不写盘，外加 `parse_summary_line` 的
+`errors → error` 归一与丢弃 `warning`、`parse_summary_seconds` 读尾部耗时，
+以及最后一条**真起子进程**的端到端用例（monkeypatch `gate.RAW_DUMP_DIR` 到 tmp，
+用一个真的 setup 失败 + 一个真的 teardown 失败的用例文件跑 `run_layer`，再从落盘 JSON 里读回
+`outcome` 断言是 `error`——不靠替身自证）。
+
+**顺带证明了一件事**：原作语义是对的。`-p qaplat._dump --qaplat-dump` 真跑探针，
+setup 失败与 teardown 失败都记成 `error`。所以这一轮补的是**守卫**，不是修 bug；
+写成「修复」会撒谎。
+
+**为什么之前没被发现**：`-m platform --cov=qaplat` 报 84% 覆盖率，看上去很高；
+未覆盖的行恰好是分类分支本身（`_dump.py:82, 84, 87, 89, 91, 93` 与 `gate.py:165-179` 的兜底解析）。
+覆盖率度量的是「这行执行过没有」，不是「这个判据错了会不会有人喊」。
+
+**同时同步的数字**（新增 17 条用例后全仓从 554 涨到 **571** 条）：
+`README.md`（平台层 154 → **171**、无编号 nodeid 527 → **544**、各 `-m` 的 `deselected` 全部重算、
+覆盖率 `not ui` → `TOTAL 8360 1157-1158 86%` 与 `api` → `TOTAL 8181 3554 57%（56.56%）`、
+mypy 114 → **115 source files**）、`CONTRIBUTING.md`（默认档 520 → **537** 收集、
+`-m "not ui"` 期望 526 passed + 11 xfailed）、`.github/PULL_REQUEST_TEMPLATE.md`（154 → **171**）、
+`.github/workflows/test.yml`（平台层注释 154 → **171**、myPy 65 → **115 source files**、
+覆盖率注释与 step summary 的 56.88%-56.92% → **56.56%**）、
+`docs/platform-usage.md` / `docs/platform-metrics-report.md` / `docs/wave3-gate-policy-handoff.md` /
+`docs/质量门禁策略.md`（554 → **571**、154 → **171**）。
+
 ---
 
 ## 2026-10-13

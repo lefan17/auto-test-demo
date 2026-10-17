@@ -15,10 +15,10 @@
 这一栏是重点，请贴**你实际跑过的命令与输出**（可以截尾，但要有结论行与退出码）。
 不要只写"本地跑过了"。可用的几条：
 
-  python -m pytest -o addopts= -q -m "not ui" -p no:warnings   # 期望 509 passed, 34 deselected, 11 xfailed
+  python -m pytest -o addopts= -q -m "not ui" -p no:warnings   # 期望 526 passed, 34 deselected, 11 xfailed
   python -m pytest -o addopts= -q -m mes                       # 期望 64 passed
   python -m pytest -o addopts= -q -m login                     # 期望 29 passed
-  python -m pytest -q -m platform                              # 期望 154 passed
+  python -m pytest -q -m platform                              # 期望 171 passed
   cd traffic-replay && python -m pytest -q                     # 期望 173 passed（自带 pytest.ini）
   python -m ruff check .            && python -m ruff format --check .
   python -m mypy
